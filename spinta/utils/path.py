@@ -1,8 +1,6 @@
-import atexit
-import importlib.resources
 import pathlib
-from contextlib import ExitStack
-from pathlib import Path
+from importlib import resources
+from importlib.resources import abc
 
 
 def is_ignored(rules, base, path):
@@ -28,6 +26,5 @@ def is_ignored(rules, base, path):
     return False
 
 
-def resource_filename(package: str, target: str) -> Path:
-    with importlib.resources.files(package) / target as ref:
-        return ref
+def resource_filename(package: str, target: str) -> abc.Traversable:
+    return resources.files(package).joinpath(target)
