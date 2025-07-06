@@ -25,7 +25,8 @@ test: env
 	poetry run py.test -vvxra --tb=native --log-level=debug --disable-warnings --cov=spinta --cov-report=term-missing tests
 
 .PHONY: test2
-	test2: poetry run pytest -vvxra --tb=short --log-level=debug --cov=spinta --cov-report=term-missing tests
+test2: 
+	poetry run pytest -vvxra --tb=short --log-level=debug --cov=spinta --cov-report=term-missing tests
 
 .PHONY: run
 run: env
