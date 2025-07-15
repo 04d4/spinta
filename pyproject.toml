@@ -1,9 +1,11 @@
-[tool.poetry]
+[project]
+license = "MIT"
 name = "spinta"
+
+[tool.poetry]
 version = "0.1.86.dev0"
 description = "A platform for describing, extracting, transforming, loading and serving open data."
 authors = ["Mantas Zimnickas <sirexas@gmail.com>"]
-license = "MIT"
 readme = "README.rst"
 homepage = "https://gitlab.com/atviriduomenys/spinta"
 repository = "https://gitlab.com/atviriduomenys/spinta"
@@ -60,7 +62,11 @@ unidecode = "*"
 sqlparse = "*"
 pprintpp = "*"
 rdflib = "*"
-numpy = "*"
+numpy = [
+    {version = "1.24.4", python = "<=3.11"}, 
+    {version = "^1.26.0", python = "==3.12"},
+    {version = ">=2.0.0", python = ">=3.13"}
+    ]
 
 # CLI tool
 click = "*"
