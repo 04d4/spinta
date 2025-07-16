@@ -106,7 +106,7 @@ GeoAlchemy2 = "*"
 Shapely = "*"
 aiohttp = "*"
 fsspec = "*"
-dask = { version = "*", extras = ["dataframe"] }
+dask = { version = "^2024.8.0", extras = ["dataframe"] }
 psutil = "*"
 tabulate = "*"
 pyproj = [{version = ">=3.7.0", python = ">=3.13"}, {version = "3.6.1", python = "<3.13"}]
