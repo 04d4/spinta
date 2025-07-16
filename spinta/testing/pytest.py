@@ -143,7 +143,7 @@ def app(context) -> TestClient:
 
 @pytest.fixture
 def cli(rc: RawConfig):
-    yield SpintaCliRunner()
+    yield SpintaCliRunner(mix_stderr=False)
     _remove_push_state(rc)
 
 

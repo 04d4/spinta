@@ -69,7 +69,7 @@ numpy = [
     ]
 
 # CLI tool
-click = "*"
+click = "8.1.8"
 typer = { version = "*", extras = ["all"] }
 
 # API server dependencies
