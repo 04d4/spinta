@@ -1,6 +1,8 @@
 import logging
 from typing import Iterator
 
+import sqlalchemy as sa
+
 from spinta import commands
 from spinta.backends.helpers import validate_and_return_begin
 from spinta.components import Context, Property
@@ -86,6 +88,7 @@ def getone(
 ) -> ObjectData:
     keymap: KeyMap = context.get(f"keymap.{model.keymap.name}")
     _id = keymap.decode(model.name, id_)
+    log.debug(f"Decoded _id for model {model.name}: {_id}, type: {type(_id)}")
 
     # preparing query for retrieving item by pk (single column or multi column)
     query = {}
@@ -93,9 +96,13 @@ def getone(
         pkeys = model.external.pkeys
         for index, pk in enumerate(pkeys):
             query[pk.name] = _id[index]
+    elif isinstance(_id, dict):
+        # Handle case where _id is a dict (for models without primary keys)
+        query = _id
     else:
         pk = model.external.pkeys[0].name
         query[pk] = _id
+    log.debug(f"Query dict for model {model.name}: {query}")
 
     # building sqlalchemy query
     context.attach(f"transaction.{backend.name}", validate_and_return_begin, context, backend)
@@ -106,7 +113,17 @@ def getone(
     qry = table.select()
     for column_name, column_value in query.items():
         id_column = table.c.get(column_name)
-        qry = qry.where(id_column == column_value)
+        if backend.engine.dialect.name == "sas":
+            col_type = id_column.type
+            if isinstance(col_type, (sa.String, sa.Text)):
+                formatted_value = f"'{str(column_value)}'"
+            else:
+                # Numeric fields: unquoted floats with .0
+                formatted_value = str(float(column_value))
+            qry = qry.where(sa.text(f"{str(id_column)} = {formatted_value}"))
+        else:
+            qry = qry.where(id_column == column_value)
+    log.debug(f"Generated SQL query for model {model.name}: {qry}")
 
     # #executing query
     result = conn.execute(qry)

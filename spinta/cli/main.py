@@ -94,15 +94,36 @@ def main(
     else:
         raise ValueError("Unknown value {tb!r} for --tb option. Possible values are: pretty, native.")
 
-    logging.basicConfig(
-        level=logging.getLevelName(log_level.upper()),
-        format="%(asctime)s %(levelname)s: %(message)s",
-        filename=log_file,
-    )
+    # Configure logging more explicitly to ensure it works even if already configured
+    level = logging.getLevelName(log_level.upper() if log_level else "WARNING")
+
+    # Remove all existing handlers to avoid conflicts
+    root_logger = logging.getLogger()
+    for handler in root_logger.handlers[:]:
+        root_logger.removeHandler(handler)
+
+    # Create new handler
+    if log_file:
+        handler = logging.FileHandler(log_file)
+    else:
+        handler = logging.StreamHandler()
+
+    # Set format
+    formatter = logging.Formatter("%(asctime)s %(levelname)s: %(message)s")
+    handler.setFormatter(formatter)
+
+    # Set level on root logger and add handler
+    root_logger.setLevel(level)
+    root_logger.addHandler(handler)
+
+    # Also set level on our specific logger to ensure it works
+    log.setLevel(level)
+    log.propagate = True  # Ensure messages propagate to root logger
 
     log.debug("log file set to: %s", log_file or "STDERR")
     log.debug("log level set to: %s", log_level)
 
-    ctx.obj = ctx.obj or create_context("cli", args=option, envfile=env_file)
+    if ctx.obj is None:
+        ctx.obj = create_context("cli", args=option, envfile=env_file)
     if version:
         echo(spinta.__version__)

@@ -870,6 +870,23 @@ def prepare_dtype_for_response(
     return value
 
 
+@commands.prepare_dtype_for_response.register(Context, Format, String, str)
+def prepare_dtype_for_response(
+    context: Context,
+    fmt: Format,
+    dtype: String,
+    value: str,
+    *,
+    data: Dict[str, Any],
+    action: Action,
+    select: dict = None,
+):
+    """Strip leading and trailing whitespace from string values for all backends."""
+    if value is not None:
+        return value.strip()
+    return value
+
+
 @commands.prepare_dtype_for_response.register(Context, Format, DataType, NotAvailable)
 def prepare_dtype_for_response(
     context: Context,
@@ -1936,6 +1953,16 @@ def cast_backend_to_python(context: Context, dtype: Array, backend: Backend, dat
 @commands.cast_backend_to_python.register(Context, Denorm, Backend, object)
 def cast_backend_to_python(context: Context, dtype: Denorm, backend: Backend, data: Any, **kwargs) -> Any:
     return commands.cast_backend_to_python(context, dtype.rel_prop, backend, data, **kwargs)
+
+
+# TODO(oa): do we need this?
+@commands.cast_backend_to_python.register(Context, String, Backend, str)
+def cast_backend_to_python(context: Context, dtype: String, backend: Backend, data: str, **kwargs) -> Any:
+    if _check_if_nan(data):
+        return None
+    if hasattr(backend, "type") and backend.type == "sql/sas":
+        return data.strip()
+    return data
 
 
 @commands.reload_backend_metadata.register(Context, Manifest, Backend)

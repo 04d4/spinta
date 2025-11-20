@@ -28,7 +28,20 @@ from spinta.utils.naming import to_model_name
 from spinta.utils.naming import to_property_name
 
 
+def _ensure_dialect_registered(path: str):
+    url = sa.engine.make_url(path)
+    dialect_name = url.drivername  # e.g., 'sas+jdbc', 'postgresql', etc.
+
+    # Check if this is a custom dialect that needs registration
+    if dialect_name.startswith("sas"):
+        # Import the SAS backend module to trigger dialect registration
+        import spinta.datasets.backends.sql.backends.sas  # noqa: F401
+
+
 def read_schema(context: Context, path: str, prepare: str = None, dataset_name: str = ""):
+    # TODO(oa): Ensure custom dialects are registered before engine creation
+    _ensure_dialect_registered(path)
+
     engine = sa.create_engine(path)
     schema = None
     if prepare:
@@ -49,7 +62,21 @@ def read_schema(context: Context, path: str, prepare: str = None, dataset_name: 
 
     url = sa.engine.make_url(path)
     dataset = dataset_name if dataset_name else to_dataset_name(url.database) if url.database else "dataset1"
+
+    # Extract schema from URL query parameters if not set by prepare
+    if schema is None:
+        schema = url.query.get("schema")
+
     insp = sa.inspect(engine)
+
+    # Ensure schema is properly set for SAS dialect
+    if hasattr(insp, "dialect") and hasattr(insp.dialect, "default_schema_name"):
+        if schema is None and insp.dialect.default_schema_name:
+            schema = insp.dialect.default_schema_name
+        elif schema is None:
+            # For SAS, if no schema is set, try to get it from the URL again
+            # This handles the case where the inspector is created before dialect initialization
+            schema = url.query.get("schema")
 
     table_mapper = [
         {
