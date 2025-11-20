@@ -58,17 +58,16 @@ class SASDialect(BaseDialect):  # type: ignore[misc]
         if url.port:
             jdbc_url += f":{url.port}"
 
-        # Connection properties
-        props = {
-            "user": url.username or "",
-            "password": url.password or "",
+        kwargs = {
+            "jclassname": self.jdbc_driver_name,
+            "url": jdbc_url,
+            "driver_args": [url.username or "", url.password or ""],
         }
 
-        # Add query parameters to properties
         if url.query:
-            props.update(url.query)
+            pass
 
-        return ([jdbc_url], props)
+        return ((), kwargs)
 
     def do_rollback(self, dbapi_connection):
         # SAS doesn't support transactions - no-op

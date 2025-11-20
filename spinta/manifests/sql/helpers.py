@@ -28,7 +28,20 @@ from spinta.utils.naming import to_model_name
 from spinta.utils.naming import to_property_name
 
 
+def _ensure_dialect_registered(path: str):
+    url = sa.engine.make_url(path)
+    dialect_name = url.drivername  # e.g., 'sas+jdbc', 'postgresql', etc.
+
+    # Check if this is a custom dialect that needs registration
+    if dialect_name.startswith("sas"):
+        # Import the SAS backend module to trigger dialect registration
+        import spinta.datasets.backends.sql.backends.sas  # noqa: F401
+
+
 def read_schema(context: Context, path: str, prepare: str = None, dataset_name: str = ""):
+    # TODO(oa): Ensure custom dialects are registered before engine creation
+    _ensure_dialect_registered(path)
+
     engine = sa.create_engine(path)
     schema = None
     if prepare:
