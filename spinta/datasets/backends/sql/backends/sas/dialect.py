@@ -39,6 +39,7 @@ class SASDialect(BaseDialect, DefaultDialect):
 
     # Dialect identification
     name = "sas"
+    driver = "jdbc"  # Required by SQLAlchemy for sas+jdbc:// URLs
     jdbc_db_name = "sasiom"
     jdbc_driver_name = "com.sas.rio.MVADriver"
 
@@ -101,7 +102,7 @@ class SASDialect(BaseDialect, DefaultDialect):
         kwargs = {
             "jclassname": self.jdbc_driver_name,
             "url": jdbc_url,
-            "driver_args": [url.username or "", url.password or ""],
+            "driver_args": {"user": url.username or "", "password": url.password or "", "applyFormats": "true"},
         }
 
         if url.query:
