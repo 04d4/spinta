@@ -16,11 +16,12 @@ Limitations:
 - Limited DDL operations
 """
 
-from sqlalchemy_jdbcapi.base import BaseDialect  # type: ignore[import-untyped]
+from sqlalchemy_jdbcapi.base import BaseDialect
 from sqlalchemy import types as sqltypes
+from sqlalchemy.engine.default import DefaultDialect
 
 
-class SASDialect(BaseDialect):  # type: ignore[misc]
+class SASDialect(BaseDialect, DefaultDialect):
     """
     SQLAlchemy dialect for SAS databases using JDBC.
 
@@ -49,7 +50,46 @@ class SASDialect(BaseDialect):  # type: ignore[misc]
     supports_transactions = False
 
     def __init__(self, **kwargs):
-        self.default_schema_name = None
+        """
+        Initialize the SAS dialect.
+
+        Calls DefaultDialect.__init__ to set up all SQLAlchemy infrastructure.
+        BaseDialect has no __init__, so super() correctly resolves to DefaultDialect.
+        """
+        # This calls DefaultDialect.__init__(**kwargs)
+        super().__init__(**kwargs)
+
+        # SAS-specific initialization if needed
+        # self.default_schema_name will be set by initialize()
+
+    def on_connect_url(self, url):
+        """
+        Return a callable to be executed on new connections.
+
+        SAS doesn't need any special connection initialization.
+
+        Args:
+            url: SQLAlchemy URL object
+
+        Returns:
+            None (no special initialization needed)
+        """
+        return None
+
+    def initialize(self, connection):
+        """
+        Initialize dialect with connection-specific settings.
+
+        Args:
+            connection: Database connection object
+        """
+        # BaseDialect may or may not have initialize method depending on version
+        # Only call parent if it exists
+        if hasattr(super(SASDialect, self), "initialize"):
+            super(SASDialect, self).initialize(connection)
+
+        # SQLAlchemy will set attributes via other mechanisms
+        self.default_schema_name = ""
 
     def create_connect_args(self, url):
         # Build JDBC URL
