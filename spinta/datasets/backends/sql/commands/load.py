@@ -16,5 +16,6 @@ def load(context: Context, backend: Sql, config: Dict[str, Any]):
         # not. In this case we still create backend instance, but leave it
         # uninitialized.
         backend.engine = sa.create_engine(dsn, echo=False)
+
         backend.schema = sa.MetaData(backend.engine, schema=schema)
         backend.dbschema = schema

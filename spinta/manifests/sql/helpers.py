@@ -69,6 +69,23 @@ def read_schema(context: Context, path: str, prepare: str = None, dataset_name: 
 
     insp = sa.inspect(engine)
 
+    # Debug logging for schema handling
+    print(f"DEBUG: URL={path}")
+    print(f"DEBUG: Extracted schema from URL: {schema}")
+    if hasattr(insp, "dialect") and hasattr(insp.dialect, "default_schema_name"):
+        print(f"DEBUG: Dialect default_schema_name: {insp.dialect.default_schema_name}")
+
+    # Ensure schema is properly set for SAS dialect
+    if hasattr(insp, "dialect") and hasattr(insp.dialect, "default_schema_name"):
+        if schema is None and insp.dialect.default_schema_name:
+            schema = insp.dialect.default_schema_name
+            print(f"DEBUG: Using dialect default schema: {schema}")
+        elif schema is None:
+            # For SAS, if no schema is set, try to get it from the URL again
+            # This handles the case where the inspector is created before dialect initialization
+            schema = url.query.get("schema")
+            print(f"DEBUG: Fallback schema from URL: {schema}")
+
     table_mapper = [
         {
             "dataset": dataset,

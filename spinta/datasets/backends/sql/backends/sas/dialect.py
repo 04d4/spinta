@@ -19,6 +19,97 @@ Limitations:
 from sqlalchemy_jdbcapi.base import BaseDialect
 from sqlalchemy import types as sqltypes
 from sqlalchemy.engine.default import DefaultDialect
+from sqlalchemy.sql.compiler import IdentifierPreparer
+
+
+class SASStringType(sqltypes.VARCHAR):
+    """
+    Custom string type for SAS that strips trailing spaces from VARCHAR data.
+
+    SAS often pads character fields with spaces, so this type ensures
+    that returned string values have trailing spaces removed.
+    """
+
+    def process_result_value(self, value, dialect):
+        """
+        Process the result value by stripping trailing spaces.
+
+        Args:
+            value: The raw value from the database
+            dialect: The dialect instance
+
+        Returns:
+            The processed value with trailing spaces stripped
+        """
+        if value is not None:
+            return value.rstrip()
+        return value
+
+
+class SASIdentifierPreparer(IdentifierPreparer):
+    """
+    Custom identifier preparer for SAS that never quotes identifiers.
+
+    SAS does not support quoted identifiers in SQL syntax. This preparer
+    ensures that table names, column names, and other identifiers are never
+    wrapped in quotes, preventing SQL syntax errors.
+    """
+
+    def quote(self, ident, force=None):
+        """Return the identifier without quotes."""
+        return ident
+
+    def _requires_quotes(self, ident):
+        """SAS never requires quotes for identifiers."""
+        return False
+
+
+class SASCursorWrapper:
+    """
+    Cursor wrapper that provides a modified description property.
+
+    This wrapper strips trailing spaces from column names in the cursor.description
+    tuple, as SAS often pads character fields with spaces.
+    """
+
+    def __init__(self, cursor):
+        """
+        Initialize the cursor wrapper.
+
+        Args:
+            cursor: The original database cursor
+        """
+        self._cursor = cursor
+        # Store original description to avoid recursion when we change the class
+        self._original_description = getattr(cursor, "description", None)
+
+    @property
+    def description(self):
+        """
+        Return the cursor description with trailing spaces stripped from column names.
+
+        Returns:
+            Tuple of column descriptions with modified names
+        """
+        desc = self._original_description
+        if desc:
+            return tuple((col[0].rstrip() if col[0] else col[0],) + col[1:] for col in desc)
+        return desc
+
+    def __getattr__(self, name):
+        """
+        Delegate all other attributes and methods to the wrapped cursor.
+
+        Args:
+            name: Attribute or method name
+
+        Returns:
+            The attribute or method from the wrapped cursor
+        """
+        if name == "description":
+            # Avoid recursion by returning our property
+            return self.description
+        return getattr(self._cursor, name)
 
 
 class SASDialect(BaseDialect, DefaultDialect):
@@ -55,6 +146,9 @@ class SASDialect(BaseDialect, DefaultDialect):
     # Identifier limits
     max_identifier_length = 32
     max_index_name_length = 32
+
+    # SAS does not use quoted identifiers - disable quoting
+    quote_identifiers = False
 
     # Type specifications
     colspecs = {
@@ -104,6 +198,9 @@ class SASDialect(BaseDialect, DefaultDialect):
         # This calls DefaultDialect.__init__(**kwargs)
         super().__init__(**kwargs)
 
+        # Override the identifier preparer with our custom SAS version
+        self.identifier_preparer = SASIdentifierPreparer(self)
+
         # SAS-specific initialization if needed
         # self.default_schema_name will be set by initialize()
 
@@ -119,6 +216,7 @@ class SASDialect(BaseDialect, DefaultDialect):
         Returns:
             None (no special initialization needed)
         """
+        self.url = url
         return None
 
     def initialize(self, connection):
@@ -134,7 +232,11 @@ class SASDialect(BaseDialect, DefaultDialect):
             super(SASDialect, self).initialize(connection)
 
         # SQLAlchemy will set attributes via other mechanisms
-        self.default_schema_name = ""
+        # Extract schema from URL query parameters if available
+        if hasattr(self, "url") and self.url and self.url.query:
+            self.default_schema_name = self.url.query.get("schema")
+        else:
+            self.default_schema_name = ""
 
     def create_connect_args(self, url):
         # Build JDBC URL
@@ -181,7 +283,7 @@ class SASDialect(BaseDialect, DefaultDialect):
         if jars is not None:
             kwargs["jars"] = jars
 
-        return ((), kwargs)
+        return ((jdbc_url,), kwargs)
 
     def do_rollback(self, dbapi_connection):
         # SAS doesn't support transactions - no-op
@@ -191,6 +293,32 @@ class SASDialect(BaseDialect, DefaultDialect):
         # SAS operates in auto-commit mode and does not support transactions
         pass
 
+    # TODO(oa): ar reikia šito?
+    def do_execute(self, cursor, statement, parameters, context=None):
+        """
+        Execute a SQL statement and modify the cursor to strip trailing spaces from column names.
+
+        Overrides the default execute method to dynamically change the cursor's class
+        to SASCursorWrapper, which provides a modified description property that strips
+        trailing spaces from column names.
+
+        Args:
+            cursor: Database cursor
+            statement: SQL statement to execute
+            parameters: Query parameters
+            context: Execution context
+        """
+        # Call parent execute method
+        super().do_execute(cursor, statement, parameters, context)
+
+        # Dynamically change the cursor's class to our wrapper
+        # This preserves the cursor object identity while adding our description property
+        original_desc = cursor.description
+        cursor.__class__ = SASCursorWrapper
+        cursor._cursor = cursor
+        cursor._original_description = original_desc
+
+    @reflection.cache
     def get_schema_names(self, connection, **kw):
         query = """
             SELECT DISTINCT libname
@@ -289,7 +417,7 @@ class SASDialect(BaseDialect, DefaultDialect):
             SQLAlchemy type instance
         """
         if sas_type.lower() == "char":
-            return sqltypes.VARCHAR(length=int(length))
+            return SASStringType(length=int(length))
 
         # Numeric type - check format for specialized handling
         if format_str:
@@ -308,8 +436,8 @@ class SASDialect(BaseDialect, DefaultDialect):
             if any(fmt in format_upper for fmt in ["DATE", "DDMMYY", "MMDDYY", "YYMMDD"]):
                 return sqltypes.DATE()
 
-            # DateTime formats
-            if "DATETIME" in format_upper:
+            # DateTime formats - check for DATETIME specifically
+            if format_upper.startswith("DATETIME"):
                 return sqltypes.DATETIME()
 
             # Time formats
@@ -331,7 +459,7 @@ class SASDialect(BaseDialect, DefaultDialect):
                     return sqltypes.INTEGER()
 
         # Default numeric type
-        return sqltypes.VARCHAR(length=int(length))
+        return sqltypes.NUMERIC()
 
     def get_pk_constraint(self, connection, table_name, schema=None, **kw):
         # SAS doesn't support primary keys
@@ -347,12 +475,12 @@ class SASDialect(BaseDialect, DefaultDialect):
 
         query = """
         SELECT 
-            idxname,
+            indxname,
             name,
             unique
         FROM dictionary.indexes
         WHERE libname = ? AND memname = ?
-        ORDER BY idxname, indxpos
+        ORDER BY indxname, indxpos
         """
 
         result = connection.execute(query, (schema.upper() if schema else None, table_name.upper()))
@@ -402,15 +530,28 @@ class SASDialect(BaseDialect, DefaultDialect):
         result = connection.execute(query, (schema.upper() if schema else None, table_name.upper()))
 
         row = result.fetchone()
-        return row[0] > 0 if row else False
+        return int(row[0]) > 0 if row else False
 
     def has_sequence(self, connection, sequence_name, schema=None):
         # SAS doesn't support sequences
         return False
 
     def normalize_name(self, name):
+        """
+        Normalize identifier names for SAS.
+
+        Converts to uppercase as SAS identifiers are case-insensitive
+        and stored in uppercase. Also strips trailing spaces as SAS
+        does not support quoted identifiers.
+
+        Args:
+            name: Identifier name
+
+        Returns:
+            Normalized name in uppercase with trailing spaces stripped
+        """
         if name:
-            return name.upper()
+            return name.strip().upper()
         return name
 
     def denormalize_name(self, name):

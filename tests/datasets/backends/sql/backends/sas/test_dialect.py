@@ -8,6 +8,62 @@ from spinta.datasets.backends.sql.backends.sas.dialect import SASDialect, regist
 class TestSASDialect:
     """Test suite for the SAS SQLAlchemy dialect"""
 
+    def test_dialect_name(self):
+        """Test that the dialect has the correct name."""
+        dialect = SASDialect()
+        assert dialect.name == "sas"
+
+    def test_jdbc_db_name(self):
+        """Test that the JDBC database name is correctly set."""
+        dialect = SASDialect()
+        assert dialect.jdbc_db_name == "sasiom"
+
+    def test_jdbc_driver_name(self):
+        """Test that the JDBC driver name is correctly set."""
+        dialect = SASDialect()
+        assert dialect.jdbc_driver_name == "com.sas.rio.MVADriver"
+
+    def test_max_identifier_length(self):
+        """Test that the maximum identifier length is set to 32 (SAS limitation)."""
+        dialect = SASDialect()
+        assert dialect.max_identifier_length == 32
+
+    def test_feature_flags(self):
+        """Test that dialect feature flags are correctly configured."""
+        dialect = SASDialect()
+
+        # Test transaction support (SAS doesn't support transactions)
+        assert dialect.supports_transactions is False
+
+        # Test schema support
+        assert dialect.supports_schemas is True
+
+        # Test view support
+        assert dialect.supports_views is True
+
+        # Test constraints (SAS doesn't support them)
+        assert dialect.supports_pk_autoincrement is False
+        assert dialect.supports_sequences is False
+
+        # Test name normalization requirement
+        assert dialect.requires_name_normalize is True
+
+    def test_create_connect_args(self):
+        """Test URL parsing and connection args creation."""
+        url = make_url("sas+jdbc://testuser:testpass@localhost:8591")
+        dialect = SASDialect()
+
+        jdbc_url, props = dialect.create_connect_args(url)
+
+        # Verify JDBC URL format
+        assert jdbc_url == ("jdbc:sasiom://localhost:8591",)
+
+        # Verify connection properties
+        assert props["jclassname"] == "com.sas.rio.MVADriver"
+        assert props["url"] == "jdbc:sasiom://localhost:8591"
+        assert props["driver_args"]["user"] == "testuser"
+        assert props["driver_args"]["password"] == "testpass"
+
     def test_create_connect_args_with_schema(self):
         """Test URL parsing with schema parameter in query string."""
         url = make_url("sas+jdbc://testuser:testpass@localhost:8591/?schema=MYLIB")
@@ -16,12 +72,13 @@ class TestSASDialect:
         jdbc_url, props = dialect.create_connect_args(url)
 
         # Verify JDBC URL format
-        assert jdbc_url == ["jdbc:sasiom://localhost:8591"]
+        assert jdbc_url == ("jdbc:sasiom://localhost:8591",)
 
         # Verify connection properties include schema
-        assert props["user"] == "testuser"
-        assert props["password"] == "testpass"
-        assert props["schema"] == "MYLIB"
+        assert props["jclassname"] == "com.sas.rio.MVADriver"
+        assert props["url"] == "jdbc:sasiom://localhost:8591"
+        assert props["driver_args"]["user"] == "testuser"
+        assert props["driver_args"]["password"] == "testpass"
 
     def test_create_connect_args_no_port(self):
         """Test URL parsing when no port is specified."""
@@ -31,7 +88,7 @@ class TestSASDialect:
         jdbc_url, props = dialect.create_connect_args(url)
 
         # Verify JDBC URL format without port
-        assert jdbc_url == ["jdbc:sasiom://localhost"]
+        assert jdbc_url == ("jdbc:sasiom://localhost",)
 
     def test_create_connect_args_no_credentials(self):
         """Test URL parsing when credentials are not provided."""
@@ -41,8 +98,8 @@ class TestSASDialect:
         jdbc_url, props = dialect.create_connect_args(url)
 
         # Verify empty credentials
-        assert props["user"] == ""
-        assert props["password"] == ""
+        assert props["driver_args"]["user"] == ""
+        assert props["driver_args"]["password"] == ""
 
     def test_type_mapping_char(self):
         """Test CHAR type mapping to VARCHAR."""
@@ -110,7 +167,7 @@ class TestSASDialect:
         assert isinstance(sa_type, sqltypes.NUMERIC)
 
     def test_normalize_name(self):
-        """Test name normalization to uppercase."""
+        """Test name normalization to uppercase with trailing space stripping."""
         dialect = SASDialect()
 
         # Test various cases
@@ -118,6 +175,10 @@ class TestSASDialect:
         assert dialect.normalize_name("TableName") == "TABLENAME"
         assert dialect.normalize_name("TABLENAME") == "TABLENAME"
         assert dialect.normalize_name("table_name") == "TABLE_NAME"
+        # Test trailing space stripping
+        assert dialect.normalize_name("tablename   ") == "TABLENAME"
+        assert dialect.normalize_name("TableName  ") == "TABLENAME"
+        assert dialect.normalize_name("TABLENAME ") == "TABLENAME"
 
     def test_normalize_name_none(self):
         """Test that None is handled correctly in normalize_name."""
@@ -188,6 +249,18 @@ class TestSASDialect:
         assert result == []
 
     @patch("spinta.datasets.backends.sql.backends.sas.dialect.registry")
+    def test_initialize(self):
+        """Test dialect initialization."""
+        dialect = SASDialect()
+        mock_connection = Mock()
+
+        # Should not raise any exception
+        dialect.initialize(mock_connection)
+
+        # Verify default_schema_name is initialized
+        assert dialect.default_schema_name == ""
+
+    @patch("sqlalchemy.dialects.registry")
     def test_register_sas_dialect(self, mock_registry):
         """Test that the dialect registration function works correctly."""
         register_sas_dialect()
@@ -196,3 +269,44 @@ class TestSASDialect:
         mock_registry.register.assert_called_once_with(
             "sas.jdbc", "spinta.datasets.backends.sql.backends.sas.dialect", "SASDialect"
         )
+
+    def test_colspecs(self):
+        """Test that column type specifications are defined."""
+        dialect = SASDialect()
+
+        # Verify colspecs contains mappings for date/time types
+        assert sqltypes.Date in dialect.colspecs
+        assert sqltypes.DateTime in dialect.colspecs
+
+    def test_do_execute_strips_column_spaces(self):
+        """Test that do_execute strips trailing spaces from column names in cursor.description."""
+        dialect = SASDialect()
+
+        # Create a mock cursor with description containing trailing spaces
+        class MockCursor:
+            def __init__(self):
+                self.description = (
+                    ("COLUMN1   ", None, None, None, None, None, None),
+                    ("COLUMN2", None, None, None, None, None, None),
+                    ("COLUMN3  ", None, None, None, None, None, None),
+                )
+                self.executed = False
+
+            def execute(self, statement, parameters):
+                self.executed = True
+
+        cursor = MockCursor()
+
+        # Call do_execute
+        dialect.do_execute(cursor, "SELECT * FROM test", (), None)
+
+        # Verify that column names have trailing spaces stripped
+        expected_description = (
+            ("COLUMN1", None, None, None, None, None, None),
+            ("COLUMN2", None, None, None, None, None, None),
+            ("COLUMN3", None, None, None, None, None, None),
+        )
+        assert cursor.description == expected_description
+        assert cursor.executed is True
+        assert cursor.__class__.__name__ == "SASCursorWrapper"
+        assert sqltypes.Time in dialect.colspecs
