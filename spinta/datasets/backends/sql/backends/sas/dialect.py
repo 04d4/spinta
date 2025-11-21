@@ -41,17 +41,17 @@ class SASStringType(sqltypes.VARCHAR):
 
     def process_result_value(self, value, dialect):
         """
-        Process the result value by stripping trailing spaces.
+        Process the result value by stripping leading and trailing spaces.
 
         Args:
             value: The raw value from the database
             dialect: The dialect instance
 
         Returns:
-            The processed value with trailing spaces stripped
+            The processed value with leading and trailing spaces stripped
         """
         if value is not None:
-            return value.rstrip()
+            return value.strip()
         return value
 
 
@@ -158,6 +158,10 @@ class SASDialect(BaseDialect, DefaultDialect):
 
     # SAS does not use quoted identifiers - disable quoting
     quote_identifiers = False
+    
+    # TODO(oa): don't remove; investigate later 
+    # Enable statement caching after testing
+    supports_statement_cache = True
 
     # Type specifications
     colspecs = {
@@ -552,10 +556,10 @@ class SASDialect(BaseDialect, DefaultDialect):
 
             columns = []
             for row in result:
-                col_name = row[0].strip() if row[4] else row[4]
-                col_type = row[1]  # 'num' or 'char'
-                col_length = row[2]
-                col_format = row[3]
+                col_name = row[0].strip() if row[0] else row[0]
+                col_type = row[1].strip() if row[1] else row[1]  # 'num' or 'char'
+                col_length = row[2].strip() if row[2] else row[2]
+                col_format = row[3].strip() if row[3] else row[3]
                 col_label = row[4].strip() if row[4] else row[4]
                 col_notnull = row[5]
 
@@ -729,7 +733,7 @@ class SASDialect(BaseDialect, DefaultDialect):
 
             row = result.fetchone()
             if row and row[0]:
-                return {"text": row[0]}
+                return {"text": row[0].strip()}
 
             return {"text": None}
         except Exception as e:
@@ -800,7 +804,7 @@ class SASDialect(BaseDialect, DefaultDialect):
             Normalized name in uppercase with trailing spaces stripped
         """
         if name:
-            return name.strip().upper()
+            return name.upper().rstrip()
         return name
 
     def denormalize_name(self, name):
