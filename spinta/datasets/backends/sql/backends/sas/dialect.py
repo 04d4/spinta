@@ -49,6 +49,50 @@ class SASDialect(BaseDialect, DefaultDialect):
     supports_views = True
     # Transaction handling (SAS operates in auto-commit mode)
     supports_transactions = False
+    supports_sane_rowcount = True
+    supports_sane_multi_rowcount = False
+
+    # Identifier limits
+    max_identifier_length = 32
+    max_index_name_length = 32
+
+    # Type specifications
+    colspecs = {
+        sqltypes.Date: sqltypes.DATE,
+        sqltypes.DateTime: sqltypes.DATETIME,
+        sqltypes.Time: sqltypes.TIME,
+    }
+
+    # @classmethod
+    # def dbapi(cls):
+    #     """Return the jaydebeapi module for JDBC connections."""
+    #     import jaydebeapi
+
+    #     return jaydebeapi
+
+    @classmethod
+    def get_dialect_pool_class(cls, url):
+        """
+        Return the connection pool class to use.
+
+        This method is required by SQLAlchemy's engine creation.
+        """
+        return pool.QueuePool
+
+    @classmethod
+    def get_dialect_cls(cls, url):
+        """
+        Return the dialect class for SQLAlchemy's dialect loading mechanism.
+
+        This method is required by SQLAlchemy's dialect registry system.
+
+        Args:
+            url: SQLAlchemy URL object
+
+        Returns:
+            The SASDialect class
+        """
+        return cls
 
     def __init__(self, **kwargs):
         """
@@ -99,14 +143,43 @@ class SASDialect(BaseDialect, DefaultDialect):
         if url.port:
             jdbc_url += f":{url.port}"
 
+        # Base driver arguments
+        driver_args = {"user": url.username or "", "password": url.password or "", "applyFormats": "true"}
+
+        # Add log4j configuration to suppress warnings
+        # Set system properties that will be picked up by the Java process
+        from pathlib import Path
+
+        # Find the log4j.properties file in the same directory as this dialect
+        current_dir = Path(__file__).parent
+        log4j_config_path = current_dir / "log4j.properties"
+
+        if log4j_config_path.exists():
+            # Add log4j configuration as a system property
+            driver_args["log4j.configuration"] = f"file://{log4j_config_path.absolute()}"
+
+            # Also add the directory to the classpath for automatic loading
+            # jaydebeapi will add this to the JVM classpath
+            jars = [str(current_dir)]
+        else:
+            jars = None
+
+        # Add query parameters if present
+        if url.query:
+            # Query parameters could be added to driver_args if needed
+            pass
+
+        # jaydebeapi expects: connect(jclassname, url, driver_args, jars, libs)
+        # Return format compatible with jaydebeapi.connect()
         kwargs = {
             "jclassname": self.jdbc_driver_name,
             "url": jdbc_url,
-            "driver_args": {"user": url.username or "", "password": url.password or "", "applyFormats": "true"},
+            "driver_args": driver_args,
         }
 
-        if url.query:
-            pass
+        # Add jars parameter if log4j configuration directory was found
+        if jars is not None:
+            kwargs["jars"] = jars
 
         return ((), kwargs)
 
@@ -222,7 +295,16 @@ class SASDialect(BaseDialect, DefaultDialect):
         if format_str:
             format_upper = format_str.upper()
 
-            # Date formats
+            # Check for E8601 format strings first (SAS ISO 8601 formats)
+            if format_upper.startswith("E8601DA"):
+                # E8601DA* = Date format (ISO 8601 Date)
+                return sqltypes.DATE()
+
+            if format_upper.startswith("E8601DT"):
+                # E8601DT* = DateTime format (ISO 8601 DateTime)
+                return sqltypes.DATETIME()
+
+            # Standard SAS date formats
             if any(fmt in format_upper for fmt in ["DATE", "DDMMYY", "MMDDYY", "YYMMDD"]):
                 return sqltypes.DATE()
 
@@ -235,7 +317,7 @@ class SASDialect(BaseDialect, DefaultDialect):
                 return sqltypes.TIME()
 
             # Check for integer formats
-            if any(fmt in format_upper for fmt in ["Z", "F", "COMMA", "DOLLAR"]):
+            if any(fmt in format_upper for fmt in ["Z", "F", "COMMA", "DOLLAR", "NUMX"]):
                 # Could be integer or decimal depending on format
                 if "." in format_str:
                     # Has decimal specification
@@ -249,7 +331,7 @@ class SASDialect(BaseDialect, DefaultDialect):
                     return sqltypes.INTEGER()
 
         # Default numeric type
-        return sqltypes.NUMERIC()
+        return sqltypes.VARCHAR(length=int(length))
 
     def get_pk_constraint(self, connection, table_name, schema=None, **kw):
         # SAS doesn't support primary keys
