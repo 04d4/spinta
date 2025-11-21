@@ -62,6 +62,11 @@ def read_schema(context: Context, path: str, prepare: str = None, dataset_name: 
 
     url = sa.engine.make_url(path)
     dataset = dataset_name if dataset_name else to_dataset_name(url.database) if url.database else "dataset1"
+
+    # Extract schema from URL query parameters if not set by prepare
+    if schema is None:
+        schema = url.query.get("schema")
+
     insp = sa.inspect(engine)
 
     table_mapper = [

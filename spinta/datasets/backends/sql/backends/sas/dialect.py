@@ -138,7 +138,8 @@ class SASDialect(BaseDialect, DefaultDialect):
             ORDER BY memname
             """
         result = connection.execute(query, (schema.upper() if schema else None,))
-        return [row[0] for row in result]
+        # Strip trailing spaces from table names (common in SAS databases)
+        return [row[0].strip() for row in result]
 
     def get_view_names(self, connection, schema=None, **kw):
         if schema is None:
