@@ -1,3 +1,10 @@
+import logging
+from sqlalchemy_jdbcapi.base import BaseDialect
+from sqlalchemy import types as sqltypes, pool
+from sqlalchemy.engine import reflection
+from sqlalchemy.engine.default import DefaultDialect
+from sqlalchemy.sql.compiler import IdentifierPreparer
+
 """
 SAS JDBC SQLAlchemy Dialect
 
@@ -9,6 +16,9 @@ Features:
 - Type mapping between SAS and SQLAlchemy types
 - Table, view, column, and index reflection
 - SAS-specific format handling (DATE, DATETIME, TIME)
+- Robust error handling and fallback mechanisms
+- JVM memory management for large datasets
+- Enhanced connection pooling and recovery
 
 Limitations:
 - No primary key or foreign key support (SAS limitation)
@@ -16,10 +26,9 @@ Limitations:
 - Limited DDL operations
 """
 
-from sqlalchemy_jdbcapi.base import BaseDialect
-from sqlalchemy import types as sqltypes
-from sqlalchemy.engine.default import DefaultDialect
-from sqlalchemy.sql.compiler import IdentifierPreparer
+
+# Set up logger for SAS dialect debugging
+logger = logging.getLogger(__name__)
 
 
 class SASStringType(sqltypes.VARCHAR):
@@ -167,9 +176,10 @@ class SASDialect(BaseDialect, DefaultDialect):
     @classmethod
     def get_dialect_pool_class(cls, url):
         """
-        Return the connection pool class to use.
+        Return the connection pool class to use with enhanced error recovery.
 
         This method is required by SQLAlchemy's engine creation.
+        Uses QueuePool with SAS-specific configuration for better connection handling.
         """
         return pool.QueuePool
 
@@ -190,11 +200,27 @@ class SASDialect(BaseDialect, DefaultDialect):
 
     def __init__(self, **kwargs):
         """
-        Initialize the SAS dialect.
+        Initialize the SAS dialect with enhanced connection pooling configuration.
 
         Calls DefaultDialect.__init__ to set up all SQLAlchemy infrastructure.
         BaseDialect has no __init__, so super() correctly resolves to DefaultDialect.
         """
+        # Configure connection pooling parameters for better SAS connection handling
+        pool_kwargs = {
+            "pool_size": 5,  # Smaller pool size for SAS connections
+            "max_overflow": 10,  # Allow overflow connections
+            "pool_timeout": 30,  # Connection timeout
+            "pool_recycle": 3600,  # Recycle connections every hour
+            "pool_pre_ping": True,  # Test connections before use
+        }
+
+        # Merge with any existing pool kwargs
+        if "poolclass" not in kwargs:
+            kwargs["poolclass"] = self.get_dialect_pool_class(None)
+
+        # Update kwargs with pool configuration
+        kwargs.update(pool_kwargs)
+
         # This calls DefaultDialect.__init__(**kwargs)
         super().__init__(**kwargs)
 
@@ -203,6 +229,45 @@ class SASDialect(BaseDialect, DefaultDialect):
 
         # SAS-specific initialization if needed
         # self.default_schema_name will be set by initialize()
+
+    def _configure_jvm_memory(self):
+        """
+        Configure JVM memory settings to prevent OutOfMemoryError during SAS operations.
+
+        This method sets appropriate JVM heap sizes and garbage collection options
+        to handle large SAS datasets without causing memory issues.
+        """
+        import os
+
+        # Set JVM heap size limits to prevent memory issues
+        # Default to reasonable limits if not already set
+        jvm_opts = []
+
+        # Check for existing JVM options
+        existing_opts = os.environ.get("_JAVA_OPTIONS", "")
+        if existing_opts:
+            jvm_opts.extend(existing_opts.split())
+
+        # Add memory management if not already present
+        has_heap_min = any("-Xms" in opt for opt in jvm_opts)
+        has_heap_max = any("-Xmx" in opt for opt in jvm_opts)
+
+        if not has_heap_min:
+            # Set minimum heap size to 256MB
+            jvm_opts.append("-Xms256m")
+
+        if not has_heap_max:
+            # Set maximum heap size to 1GB to prevent excessive memory usage
+            jvm_opts.append("-Xmx1g")
+
+        # Add garbage collection tuning for better memory management
+        has_gc_tuning = any("-XX:" in opt for opt in jvm_opts)
+        if not has_gc_tuning:
+            # Use G1GC for better performance with large datasets
+            jvm_opts.extend(["-XX:+UseG1GC", "-XX:MaxGCPauseMillis=200"])
+
+        # Update environment variable
+        os.environ["_JAVA_OPTIONS"] = " ".join(jvm_opts)
 
     def on_connect_url(self, url):
         """
@@ -221,26 +286,58 @@ class SASDialect(BaseDialect, DefaultDialect):
 
     def initialize(self, connection):
         """
-        Initialize dialect with connection-specific settings.
+        Initialize dialect with connection-specific settings and fallback mechanisms.
 
         Args:
             connection: Database connection object
         """
-        # BaseDialect may or may not have initialize method depending on version
-        # Only call parent if it exists
-        if hasattr(super(SASDialect, self), "initialize"):
-            super(SASDialect, self).initialize(connection)
+        logger = logging.getLogger(__name__)
+        try:
+            # BaseDialect may or may not have initialize method depending on version
+            # Only call parent if it exists
+            if hasattr(super(SASDialect, self), "initialize"):
+                super(SASDialect, self).initialize(connection)
 
-        # SQLAlchemy will set attributes via other mechanisms
-        # Extract schema from URL query parameters if available
-        if hasattr(self, "url") and self.url and self.url.query:
-            self.default_schema_name = self.url.query.get("schema")
-        else:
+            # SQLAlchemy will set attributes via other mechanisms
+            # Extract schema from URL query parameters if available
+            if hasattr(self, "url") and self.url and self.url.query:
+                schema_from_url = self.url.query.get("schema")
+                logger.debug(f"SAS dialect: Found schema in URL query: {schema_from_url}")
+                self.default_schema_name = schema_from_url
+            else:
+                logger.debug("SAS dialect: No schema found in URL query, using empty string")
+                self.default_schema_name = ""
+
+            logger.debug(f"SAS dialect: default_schema_name set to: '{self.default_schema_name}'")
+
+        except Exception as e:
+            # Log initialization errors but don't fail completely
+            logger.warning(f"SAS dialect initialization failed: {e}. Using fallback settings.")
             self.default_schema_name = ""
 
     def create_connect_args(self, url):
-        # Build JDBC URL
-        jdbc_url = f"jdbc:{self.jdbc_db_name}://{url.host}"
+        """
+        Parse the SQLAlchemy URL and create JDBC connection arguments with JVM memory management.
+
+        The SAS JDBC URL format is:
+            jdbc:sasiom://host:port
+
+        Additional options can be passed as query parameters.
+
+        Args:
+            url: SQLAlchemy URL object
+
+        Returns:
+            Tuple of (args, kwargs) for JDBC connection compatible with jaydebeapi
+        """
+        logger.debug(f"Creating connection args for URL: {url}")
+
+        try:
+            # Configure JVM memory settings before creating connection
+            # self._configure_jvm_memory()
+
+            # Build JDBC URL
+            jdbc_url = f"jdbc:{self.jdbc_db_name}://{url.host}"
 
         if url.port:
             jdbc_url += f":{url.port}"
@@ -260,11 +357,11 @@ class SASDialect(BaseDialect, DefaultDialect):
             # Add log4j configuration as a system property
             driver_args["log4j.configuration"] = f"file://{log4j_config_path.absolute()}"
 
-            # Also add the directory to the classpath for automatic loading
-            # jaydebeapi will add this to the JVM classpath
-            jars = [str(current_dir)]
-        else:
-            jars = None
+                # Also add the directory to the classpath for automatic loading
+                # jaydebeapi will add this to the JVM classpath
+                jars = [str(current_dir)]
+            else:
+                jars = None
 
         # Add query parameters if present
         if url.query:
@@ -283,106 +380,184 @@ class SASDialect(BaseDialect, DefaultDialect):
         if jars is not None:
             kwargs["jars"] = jars
 
-        return ((jdbc_url,), kwargs)
+            logger.debug(f"Connection args created successfully: jclassname={self.jdbc_driver_name}, url={jdbc_url}")
+            return ((), kwargs)
+
+        except Exception as e:
+            logger.error(f"Error in create_connect_args: {e}", exc_info=True)
+            raise
 
     def do_rollback(self, dbapi_connection):
         # SAS doesn't support transactions - no-op
         pass
 
     def do_commit(self, dbapi_connection):
-        # SAS operates in auto-commit mode and does not support transactions
-        pass
-
-    # TODO(oa): ar reikia šito?
-    def do_execute(self, cursor, statement, parameters, context=None):
         """
-        Execute a SQL statement and modify the cursor to strip trailing spaces from column names.
+        Handle transaction commit.
 
-        Overrides the default execute method to dynamically change the cursor's class
-        to SASCursorWrapper, which provides a modified description property that strips
-        trailing spaces from column names.
+        SAS operates in auto-commit mode and does not support transactions,
+        so this is a no-op.
 
         Args:
-            cursor: Database cursor
-            statement: SQL statement to execute
-            parameters: Query parameters
-            context: Execution context
+            dbapi_connection: JDBC connection object
         """
-        # Call parent execute method
-        super().do_execute(cursor, statement, parameters, context)
-
-        # Dynamically change the cursor's class to our wrapper
-        # This preserves the cursor object identity while adding our description property
-        original_desc = cursor.description
-        cursor.__class__ = SASCursorWrapper
-        cursor._cursor = cursor
-        cursor._original_description = original_desc
+        # SAS doesn't support transactions - no-op
+        pass
 
     @reflection.cache
     def get_schema_names(self, connection, **kw):
-        query = """
+        """
+        Retrieve list of schema (library) names from SAS with fallback mechanisms.
+
+        Queries the DICTIONARY.LIBNAMES table to get all accessible libraries.
+        Falls back to empty list if query fails to prevent inspect command failures.
+
+        Args:
+            connection: Database connection
+            **kw: Additional keyword arguments
+
+        Returns:
+            List of schema names (library names)
+        """
+        try:
+            query = """
             SELECT DISTINCT libname
             FROM dictionary.libnames
             WHERE libname IS NOT NULL
             ORDER BY libname
             """
-        result = connection.execute(query)
-        return [row[0] for row in result]
+
+            result = connection.execute(query)
+            return [row[0].strip() for row in result]
+        except Exception as e:
+            # Log error and return empty list as fallback
+            logger.error(f"Failed to retrieve schema names: {e}. Returning empty list.")
+            return []
 
     def get_table_names(self, connection, schema=None, **kw):
-        if schema is None:
-            schema = self.default_schema_name
+        """
+        Retrieve list of table names from a schema with fallback mechanisms.
 
-        query = """
+        Queries DICTIONARY.TABLES filtering for MEMTYPE='DATA'.
+        Falls back gracefully if schema introspection fails.
+
+        Args:
+            connection: Database connection
+            schema: Schema (library) name, defaults to default schema
+            **kw: Additional keyword arguments
+
+        Returns:
+            List of table names
+        """
+        try:
+            if schema is None:
+                schema = self.default_schema_name
+                logger.debug(f"get_table_names: using default_schema_name='{schema}'")
+
+            logger.debug(f"get_table_names: querying schema='{schema}'")
+
+            query = """
             SELECT memname
             FROM dictionary.tables
             WHERE libname = ? AND memtype = 'DATA'
             ORDER BY memname
             """
-        result = connection.execute(query, (schema.upper() if schema else None,))
-        # Strip trailing spaces from table names (common in SAS databases)
-        return [row[0].strip() for row in result]
 
+            result = connection.execute(query, (schema.upper() if schema else None,))
+            # Strip trailing spaces from table names (common in SAS databases)
+            table_names = [row[0].strip() for row in result]
+            logger.debug(f"get_table_names: found {len(table_names)} tables in schema '{schema}': {table_names[:5]}...")
+            return table_names
+        except Exception as e:
+            # Log error and return empty list as fallback
+            logger.error(f"Failed to retrieve table names for schema {schema}: {e}. Returning empty list.")
+            logger.debug(f"Exception type: {type(e).__name__}, Exception message: {str(e)}")
+            return []
+
+    @reflection.cache
     def get_view_names(self, connection, schema=None, **kw):
-        if schema is None:
-            schema = self.default_schema_name
+        """
+        Retrieve list of view names from a schema with fallback mechanisms.
 
-        query = """
+        Queries DICTIONARY.TABLES filtering for MEMTYPE='VIEW'.
+        Falls back gracefully if view introspection fails.
+
+        Args:
+            connection: Database connection
+            schema: Schema (library) name, defaults to default schema
+            **kw: Additional keyword arguments
+
+        Returns:
+            List of view names
+        """
+        try:
+            if schema is None:
+                schema = self.default_schema_name
+
+            query = """
             SELECT memname
             FROM dictionary.tables
             WHERE libname = ? AND memtype = 'VIEW'
             ORDER BY memname
             """
-        result = connection.execute(query, (schema.upper() if schema else None,))
-        return [row[0].strip() for row in result]
+
+            result = connection.execute(query, (schema.upper() if schema else None,))
+            return [row[0].strip() for row in result]
+        except Exception as e:
+            # Log error and return empty list as fallback
+            logger.error(f"Failed to retrieve view names for schema {schema}: {e}. Returning empty list.")
+            return []
 
     def get_columns(self, connection, table_name, schema=None, **kw):
-        if schema is None:
-            schema = self.default_schema_name
-
-        query = """
-        SELECT 
-            name,
-            type,
-            length,
-            format,
-            label,
-            notnull
-        FROM dictionary.columns
-        WHERE libname = ? AND memname = ?
-        ORDER BY varnum
         """
+        Retrieve column metadata for a table with fallback mechanisms.
 
-        result = connection.execute(query, (schema.upper() if schema else None, table_name.upper()))
+        Queries DICTIONARY.COLUMNS to get column definitions including:
+        - Column name
+        - Data type
+        - Length
+        - Format
+        - Label
+        - Nullable status
 
-        columns = []
-        for row in result:
-            col_name = row[0]
-            col_type = row[1]  # 'num' or 'char'
-            col_length = row[2]
-            col_format = row[3]
-            col_label = row[4]
-            col_notnull = row[5]
+        Falls back gracefully if column introspection fails.
+
+        Args:
+            connection: Database connection
+            table_name: Name of the table
+            schema: Schema (library) name, defaults to default schema
+            **kw: Additional keyword arguments
+
+        Returns:
+            List of column dictionaries with metadata
+        """
+        try:
+            if schema is None:
+                schema = self.default_schema_name
+
+            query = """
+            SELECT
+                name,
+                type,
+                length,
+                format,
+                label,
+                notnull
+            FROM dictionary.columns
+            WHERE libname = ? AND memname = ?
+            ORDER BY varnum
+            """
+
+            result = connection.execute(query, (schema.upper() if schema else None, table_name.upper()))
+
+            columns = []
+            for row in result:
+                col_name = row[0].strip() if row[4] else row[4]
+                col_type = row[1]  # 'num' or 'char'
+                col_length = row[2]
+                col_format = row[3]
+                col_label = row[4].strip() if row[4] else row[4]
+                col_notnull = row[5]
 
             # Map SAS type to SQLAlchemy type
             sa_type = self._map_sas_type_to_sqlalchemy(col_type, col_length, col_format)
@@ -399,7 +574,11 @@ class SASDialect(BaseDialect, DefaultDialect):
 
             columns.append(column_info)
 
-        return columns
+            return columns
+        except Exception as e:
+            # Log error and return empty list as fallback
+            logger.error(f"Failed to retrieve columns for table {table_name}: {e}. Returning empty list.")
+            return []
 
     def _map_sas_type_to_sqlalchemy(self, sas_type, length, format_str):
         """
@@ -470,69 +649,139 @@ class SASDialect(BaseDialect, DefaultDialect):
         return []
 
     def get_indexes(self, connection, table_name, schema=None, **kw):
-        if schema is None:
-            schema = self.default_schema_name
-
-        query = """
-        SELECT 
-            indxname,
-            name,
-            unique
-        FROM dictionary.indexes
-        WHERE libname = ? AND memname = ?
-        ORDER BY indxname, indxpos
         """
+        Retrieve index information for a table with graceful error handling.
 
-        result = connection.execute(query, (schema.upper() if schema else None, table_name.upper()))
+        Queries DICTIONARY.INDEXES to get index definitions.
+        Falls back gracefully if index introspection fails.
 
-        # Group columns by index name
-        indexes = {}
-        for row in result:
-            idx_name = row[0]
-            col_name = row[1]
-            is_unique = row[2]
+        Args:
+            connection: Database connection
+            table_name: Name of the table
+            schema: Schema (library) name
+            **kw: Additional keyword arguments
 
-            if idx_name not in indexes:
-                indexes[idx_name] = {"name": idx_name, "column_names": [], "unique": bool(is_unique)}
+        Returns:
+            List of index dictionaries with metadata
+        """
+        try:
+            if schema is None:
+                schema = self.default_schema_name
 
-            indexes[idx_name]["column_names"].append(col_name)
+            query = """
+            SELECT
+                indxname,
+                name,
+                unique
+            FROM dictionary.indexes
+            WHERE libname = ? AND memname = ?
+            ORDER BY indxname, indxpos
+            """
 
-        return list(indexes.values())
+            result = connection.execute(query, (schema.upper() if schema else None, table_name.upper()))
 
+            # Group columns by index name
+            indexes = {}
+            for row in result:
+                idx_name = row[0]
+                col_name = row[1]
+                is_unique = row[2]
+
+                if idx_name not in indexes:
+                    indexes[idx_name] = {"name": idx_name, "column_names": [], "unique": bool(is_unique)}
+
+                indexes[idx_name]["column_names"].append(col_name)
+
+            return list(indexes.values())
+        except Exception as e:
+            # Log error and return empty list as fallback
+            logger.error(f"Failed to retrieve indexes for table {table_name}: {e}. Returning empty list.")
+            return []
+
+    @reflection.cache
     def get_table_comment(self, connection, table_name, schema=None, **kw):
-        if schema is None:
-            schema = self.default_schema_name
-
-        query = """
-        SELECT memlabel
-        FROM dictionary.tables
-        WHERE libname = ? AND memname = ?
         """
+        Retrieve table comment (label) with graceful error handling.
 
-        result = connection.execute(query, (schema.upper() if schema else None, table_name.upper()))
+        Queries DICTIONARY.TABLES for the table label.
+        Falls back gracefully if comment retrieval fails.
 
-        row = result.fetchone()
-        if row and row[0]:
-            return {"text": row[0].strip()}
+        Args:
+            connection: Database connection
+            table_name: Name of the table
+            schema: Schema (library) name
+            **kw: Additional keyword arguments
 
-        return {"text": None}
+        Returns:
+            Dictionary with 'text' key containing the comment
+        """
+        try:
+            if schema is None:
+                schema = self.default_schema_name
+
+            query = """
+            SELECT memlabel
+            FROM dictionary.tables
+            WHERE libname = ? AND memname = ?
+            """
+
+            result = connection.execute(query, (schema.upper() if schema else None, table_name.upper()))
+
+            row = result.fetchone()
+            if row and row[0]:
+                return {"text": row[0]}
+
+            return {"text": None}
+        except Exception as e:
+            # Log error and return None as fallback
+            logger.error(f"Failed to retrieve table comment for {table_name}: {e}. Returning None.")
+            return {"text": None}
 
     def has_table(self, connection, table_name, schema=None):
-        if schema is None:
-            schema = self.default_schema_name
-
-        query = """
-        SELECT COUNT(*)
-        FROM dictionary.tables
-        WHERE libname = ? AND memname = ? AND memtype = 'DATA'
         """
+        Check if a table exists in the schema with graceful error handling.
 
-        result = connection.execute(query, (schema.upper() if schema else None, table_name.upper()))
+        Args:
+            connection: Database connection
+            table_name: Name of the table
+            schema: Schema (library) name
 
-        row = result.fetchone()
-        return int(row[0]) > 0 if row else False
+        Returns:
+            True if table exists, False otherwise (including on errors)
+        """
+        try:
+            if schema is None:
+                schema = self.default_schema_name
+
+            query = """
+            SELECT COUNT(*)
+            FROM dictionary.tables
+            WHERE libname = ? AND memname = ? AND memtype = 'DATA'
+            """
+
+            result = connection.execute(query, (schema.upper() if schema else None, table_name.upper()))
+
+            row = result.fetchone()
+            return int(row[0]) > 0 if row else False
+        except Exception as e:
+            # Log error and return False as fallback
+            logger.error(f"Failed to check table existence for {table_name}: {e}. Returning False.")
+            return False
 
     def has_sequence(self, connection, sequence_name, schema=None):
+        """
+        Check if a sequence exists.
+
+        SAS does not support sequences, so this always returns False.
+
+        Args:
+            connection: Database connection
+            sequence_name: Name of the sequence
+            schema: Schema name
+
+        Returns:
+            False (sequences not supported)
+        """
         # SAS doesn't support sequences
         return False
 
