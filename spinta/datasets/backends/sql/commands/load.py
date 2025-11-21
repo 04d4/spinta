@@ -1,4 +1,5 @@
 from typing import Dict, Any
+import os
 
 import sqlalchemy as sa
 
@@ -10,6 +11,9 @@ from spinta.datasets.backends.sql.components import Sql
 @commands.load.register(Context, Sql, dict)
 def load(context: Context, backend: Sql, config: Dict[str, Any]):
     dsn = config["dsn"]
+    # TODO(oa): do we need to expand environment variables here?
+    if dsn:
+        dsn = os.path.expandvars(dsn)
     schema = config.get("schema")
     if dsn:
         # There can be a situation, when backend type was given, but dsn was
