@@ -112,7 +112,7 @@ class SASDialect(BaseDialect, DefaultDialect):
     # SAS does not use quoted identifiers - disable quoting
     quote_identifiers = False
 
-    # Enable statement caching after testing
+    # TODO(oa): Tikrai reikalingi!
     supports_statement_cache = True
 
     @classmethod
@@ -287,7 +287,12 @@ class SASDialect(BaseDialect, DefaultDialect):
             logger.debug(f"Built JDBC URL: {jdbc_url}")
 
             # Base driver arguments
-            driver_args = {"user": url.username or "", "password": url.password or "", "applyFormats": "true"}
+            # IMPORTANT: All driver_args values MUST be strings for java.util.Properties
+            # jaydebeapi converts these to Java Properties which only accepts String values
+            driver_args = {"user": url.username or "", "password": url.password or "", "applyFormats": "false"}
+
+            # Log driver_args with types for debugging
+            logger.debug(f"Driver args with types: {[(k, type(v).__name__, v) for k, v in driver_args.items()]}")
 
             # Add log4j configuration to suppress warnings
             # Set system properties that will be picked up by the Java process
@@ -460,6 +465,30 @@ class SASDialect(BaseDialect, DefaultDialect):
             logger.error(f"Failed to retrieve view names for schema {schema}: {e}. Returning empty list.")
             return []
 
+    def _safe_value_to_str(self, value):
+        """
+        Safely convert SAS values to strings, handling both strings and Java numeric types.
+
+        When applyFormats is "false", SAS returns numeric values as java.lang.Double
+        instead of formatted strings. This helper handles both cases.
+
+        Args:
+            value: Value from SAS (can be string, Java Double, or other numeric types)
+
+        Returns:
+            String representation of the value, or None if value is None
+        """
+        if value is None:
+            return None
+
+        # If it's already a string, strip it
+        if isinstance(value, str):
+            return value.strip()
+
+        # For numeric types (including Java types), convert to string
+        # This handles java.lang.Double, java.lang.Integer, etc.
+        return str(value)
+
     def get_columns(self, connection, table_name, schema=None, **kw):
         """
         Retrieve column metadata for a table with fallback mechanisms.
@@ -504,12 +533,13 @@ class SASDialect(BaseDialect, DefaultDialect):
 
             columns = []
             for row in result:
-                col_name = row[0].strip() if row[0] else row[0]
-                col_type = row[1].strip() if row[1] else row[1]  # 'num' or 'char'
-                col_length = row[2].strip() if row[2] else row[2]
-                col_format = row[3].strip() if row[3] else row[3]
-                col_label = row[4].strip() if row[4] else row[4]
-                col_notnull = row[5]
+                col_name = self._safe_value_to_str(row[0])
+                col_type = self._safe_value_to_str(row[1])  # 'num' or 'char'
+                col_length = self._safe_value_to_str(row[2])
+                col_format = self._safe_value_to_str(row[3])
+                col_label = self._safe_value_to_str(row[4])
+                # notnull can be numeric (0 or 1), convert to bool directly
+                col_notnull = bool(row[5]) if row[5] is not None else False
 
                 # Map SAS type to SQLAlchemy type
                 sa_type = self._map_sas_type_to_sqlalchemy(col_type, col_length, col_format)
@@ -541,14 +571,15 @@ class SASDialect(BaseDialect, DefaultDialect):
 
         Args:
             sas_type: SAS type ('num' or 'char')
-            length: Column length
+            length: Column length (can be string representation of int or float)
             format_str: SAS format string (e.g., 'DATE9.', 'DATETIME20.')
 
         Returns:
             SQLAlchemy type instance
         """
         if sas_type.lower() == "char":
-            return SASStringType(length=int(length))
+            # Length might be a float string like '50.0', convert via float first
+            return SASStringType(length=int(float(length)))
 
         # Numeric type - check format for specialized handling
         if format_str:
@@ -665,12 +696,13 @@ class SASDialect(BaseDialect, DefaultDialect):
             # Group columns by index name
             indexes = {}
             for row in result:
-                idx_name = row[0].strip() if row[0] else row[0]
-                col_name = row[1].strip() if row[1] else row[1]
-                is_unique = row[2].strip() if row[2] else row[2]
+                idx_name = self._safe_value_to_str(row[0])
+                col_name = self._safe_value_to_str(row[1])
+                # is_unique can be numeric (0 or 1) or string, handle both
+                is_unique = bool(row[2]) if row[2] is not None else False
 
                 if idx_name not in indexes:
-                    indexes[idx_name] = {"name": idx_name, "column_names": [], "unique": bool(is_unique)}
+                    indexes[idx_name] = {"name": idx_name, "column_names": [], "unique": is_unique}
 
                 indexes[idx_name]["column_names"].append(col_name)
 

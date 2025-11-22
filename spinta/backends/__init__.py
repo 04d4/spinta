@@ -870,23 +870,6 @@ def prepare_dtype_for_response(
     return value
 
 
-@commands.prepare_dtype_for_response.register(Context, Format, String, str)
-def prepare_dtype_for_response(
-    context: Context,
-    fmt: Format,
-    dtype: String,
-    value: str,
-    *,
-    data: Dict[str, Any],
-    action: Action,
-    select: dict = None,
-):
-    """Strip leading and trailing whitespace from string values for all backends."""
-    if value is not None:
-        return value.strip()
-    return value
-
-
 @commands.prepare_dtype_for_response.register(Context, Format, DataType, NotAvailable)
 def prepare_dtype_for_response(
     context: Context,
