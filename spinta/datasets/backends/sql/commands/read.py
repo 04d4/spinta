@@ -90,6 +90,13 @@ def getone(
     _id = keymap.decode(model.name, id_)
     log.debug(f"Decoded _id for model {model.name}: {_id}, type: {type(_id)}")
 
+    # Validate keymap decoded successfully
+    if _id is None:
+        raise ValueError(
+            f"Cannot find keymap entry for id '{id_}' in model '{model.name}'. "
+            f"The row may have been deleted or the keymap is out of sync."
+        )
+
     # preparing query for retrieving item by pk (single column or multi column)
     query = {}
     if isinstance(_id, list):
@@ -110,24 +117,76 @@ def getone(
     table = model.external.name
     table = backend.get_table(model, table)
 
+    # Build query with proper column validation
     qry = table.select()
+    missing_columns = []
+    valid_conditions = []
+
     for column_name, column_value in query.items():
         id_column = table.c.get(column_name)
+        if id_column is None:
+            missing_columns.append(column_name)
+            continue
+
+        # Build WHERE condition (dialect-specific)
         if backend.engine.dialect.name == "sas":
             col_type = id_column.type
-            if isinstance(col_type, (sa.String, sa.Text)):
-                formatted_value = f"'{str(column_value)}'"
+            # Check the actual value type, not just the column type
+            if isinstance(column_value, str):
+                # String value - quote it
+                formatted_value = f"'{column_value}'"
+            elif isinstance(column_value, (int, float)) and not isinstance(column_value, bool):
+                # Numeric value - convert to string directly
+                formatted_value = str(column_value)
+            elif column_value is None:
+                # NULL value
+                formatted_value = "NULL"
             else:
-                # Numeric fields: unquoted floats with .0
-                formatted_value = str(float(column_value))
-            qry = qry.where(sa.text(f"{str(id_column)} = {formatted_value}"))
+                # Fallback: treat as string
+                formatted_value = f"'{str(column_value)}'"
+            condition = sa.text(f"{str(id_column)} = {formatted_value}")
         else:
-            qry = qry.where(id_column == column_value)
+            condition = id_column == column_value
+
+        valid_conditions.append(condition)
+
+    # Handle missing columns
+    if missing_columns:
+        raise ValueError(
+            f"Columns {missing_columns} from keymap not found in table '{table}' "
+            f"for model '{model.name}'. This may indicate:\n"
+            f"1. Table schema has changed since keymap was created\n"
+            f"2. Manifest column mappings are incorrect\n"
+            f"3. Keymap data is corrupted or out of sync"
+        )
+
+    # Validate we have at least one condition
+    if not valid_conditions:
+        raise ValueError(f"No valid columns found to query row for model '{model.name}' with id '{id_}'")
+
+    # Apply all conditions to query
+    for condition in valid_conditions:
+        qry = qry.where(condition)
     log.debug(f"Generated SQL query for model {model.name}: {qry}")
 
     # #executing query
     result = conn.execute(qry)
     row = result.fetchone()
+
+    # Validate query results
+    if row is None:
+        raise ValueError(
+            f"No row found for id '{id_}' in model '{model.name}'. "
+            f"The row may have been deleted or the query conditions don't match any data."
+        )
+
+    # Check for multiple matches (data integrity issue)
+    additional_row = result.fetchone()
+    if additional_row is not None:
+        log.warning(
+            f"Multiple rows match the keymap values for id '{id_}' in model '{model.name}'. "
+            f"This indicates data integrity issues. Returning first match."
+        )
 
     # preparing results
     data = {}
