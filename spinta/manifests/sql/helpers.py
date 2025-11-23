@@ -8,6 +8,7 @@ from typing import Tuple
 
 import sqlalchemy as sa
 from geoalchemy2.types import Geometry
+from spinta.datasets.backends.sql.backends.sas.dialect import SASStringType, SASDateType, SASDateTimeType, SASTimeType
 from sqlalchemy.dialects import mysql
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.dialects import oracle
@@ -276,6 +277,11 @@ TYPES = [
     (mssql.MONEY, "number"),  # TODO: https://github.com/atviriduomenys/spinta/issues/40
     (mssql.SMALLMONEY, "number"),  # TODO: https://github.com/atviriduomenys/spinta/issues/40
     (mssql.UNIQUEIDENTIFIER, "string"),  # Example: 6F9619FF-8B86-D011-B42D-00C04FC964FF
+    # SAS custom types
+    (SASStringType, "string"),
+    (SASDateType, "date"),
+    (SASDateTimeType, "datetime"),
+    (SASTimeType, "time"),
 ]
 
 

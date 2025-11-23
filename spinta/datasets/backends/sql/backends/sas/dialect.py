@@ -1,4 +1,6 @@
 import logging
+import re
+from datetime import datetime, date, time, timedelta
 from sqlalchemy import types as sqltypes, pool
 from sqlalchemy.engine.default import DefaultDialect
 from sqlalchemy.sql.compiler import IdentifierPreparer
@@ -8,28 +10,229 @@ from sqlalchemy.sql.compiler import IdentifierPreparer
 logger = logging.getLogger(__name__)
 
 
-class SASStringType(sqltypes.VARCHAR):
+class SASStringType(sqltypes.TypeDecorator):
     """
-    Custom string type for SAS that strips trailing spaces from VARCHAR data.
+    Enhanced string type for SAS that handles encoding, space stripping, and missing values.
 
     SAS often pads character fields with spaces, so this type ensures
-    that returned string values have trailing spaces removed.
+    that returned string values have trailing spaces removed. Also handles
+    encoding issues and missing value detection.
     """
+
+    impl = sqltypes.VARCHAR
+    cache_ok = True
+
+    def __init__(self, length=None, strip_spaces=True, **kwargs):
+        """
+        Initialize the SAS string type.
+
+        Args:
+            length: Maximum string length
+            strip_spaces: Whether to strip leading/trailing spaces (default: True)
+            **kwargs: Additional arguments passed to VARCHAR
+        """
+        super().__init__(**kwargs)
+        self.length = length
+        self.strip_spaces = strip_spaces
+        if length:
+            self.impl = sqltypes.VARCHAR(length=length)
 
     def process_result_value(self, value, dialect):
         """
-        Process the result value by stripping leading and trailing spaces.
+        Process the result value with enhanced string handling.
 
         Args:
             value: The raw value from the database
             dialect: The dialect instance
 
         Returns:
-            The processed value with leading and trailing spaces stripped
+            The processed value with proper encoding and space handling
         """
-        if value is not None:
-            return value.strip()
-        return value
+        if value is None:
+            return None
+
+        # Handle empty strings as potential missing values
+        if isinstance(value, str):
+            if self.strip_spaces:
+                value = value.strip()
+
+            # Empty strings after stripping could be missing values
+            if not value:
+                return None
+
+            # Handle encoding issues - ensure proper string encoding
+            try:
+                # Ensure the string is properly decoded
+                if isinstance(value, bytes):
+                    value = value.decode("utf-8", errors="replace")
+            except (UnicodeDecodeError, AttributeError):
+                pass
+
+            return value
+
+        return str(value) if value else None
+
+
+class SASDateType(sqltypes.TypeDecorator):
+    """
+    SAS Date type that converts numeric days since 1960-01-01 to Python date objects.
+
+    SAS stores dates as the number of days since January 1, 1960.
+    """
+
+    impl = sqltypes.DATE
+    cache_ok = True
+
+    # SAS epoch: January 1, 1960
+    SAS_EPOCH_DATE = date(1960, 1, 1)
+
+    def process_result_value(self, value, dialect):
+        """
+        Convert SAS numeric date value to Python date object.
+
+        Args:
+            value: Numeric value representing days since 1960-01-01
+            dialect: The dialect instance
+
+        Returns:
+            Python date object or None for missing values
+        """
+        if value is None:
+            return None
+
+        try:
+            # Check for SAS missing values
+            if self._is_sas_missing(value):
+                return None
+
+            # Convert numeric days to date
+            days = int(float(value))
+            return self.SAS_EPOCH_DATE + timedelta(days=days)
+        except (ValueError, OverflowError, TypeError) as e:
+            logger.warning(f"Invalid SAS date value: {value} - {e}")
+            return None
+
+    def _is_sas_missing(self, value):
+        """Check if value represents a SAS missing value."""
+        try:
+            float_val = float(value)
+            # Check for NaN or special missing values
+            if float_val != float_val:  # NaN check
+                return True
+            # SAS missing values are typically very large negative numbers
+            if float_val < -1e10:
+                return True
+            return False
+        except (ValueError, TypeError):
+            return True
+
+
+class SASDateTimeType(sqltypes.TypeDecorator):
+    """
+    SAS DateTime type that converts numeric seconds since 1960-01-01 to Python datetime objects.
+
+    SAS stores datetimes as the number of seconds since January 1, 1960 00:00:00.
+    """
+
+    impl = sqltypes.DATETIME
+    cache_ok = True
+
+    # SAS epoch: January 1, 1960 00:00:00
+    SAS_EPOCH_DATETIME = datetime(1960, 1, 1, 0, 0, 0)
+
+    def process_result_value(self, value, dialect):
+        """
+        Convert SAS numeric datetime value to Python datetime object.
+
+        Args:
+            value: Numeric value representing seconds since 1960-01-01 00:00:00
+            dialect: The dialect instance
+
+        Returns:
+            Python datetime object or None for missing values
+        """
+        if value is None:
+            return None
+
+        try:
+            # Check for SAS missing values
+            if self._is_sas_missing(value):
+                return None
+
+            # Convert numeric seconds to datetime
+            seconds = float(value)
+            return self.SAS_EPOCH_DATETIME + timedelta(seconds=seconds)
+        except (ValueError, OverflowError, TypeError) as e:
+            logger.warning(f"Invalid SAS datetime value: {value} - {e}")
+            return None
+
+    def _is_sas_missing(self, value):
+        """Check if value represents a SAS missing value."""
+        try:
+            float_val = float(value)
+            # Check for NaN or special missing values
+            if float_val != float_val:  # NaN check
+                return True
+            # SAS missing values are typically very large negative numbers
+            if float_val < -1e10:
+                return True
+            return False
+        except (ValueError, TypeError):
+            return True
+
+
+class SASTimeType(sqltypes.TypeDecorator):
+    """
+    SAS Time type that converts numeric seconds to Python time objects.
+
+    SAS stores times as the number of seconds since midnight.
+    """
+
+    impl = sqltypes.TIME
+    cache_ok = True
+
+    def process_result_value(self, value, dialect):
+        """
+        Convert SAS numeric time value to Python time object.
+
+        Args:
+            value: Numeric value representing seconds since midnight
+            dialect: The dialect instance
+
+        Returns:
+            Python time object or None for missing values
+        """
+        if value is None:
+            return None
+
+        try:
+            # Check for SAS missing values
+            if self._is_sas_missing(value):
+                return None
+
+            # Convert numeric seconds to time
+            total_seconds = int(float(value))
+            hours = (total_seconds // 3600) % 24
+            minutes = (total_seconds % 3600) // 60
+            seconds = total_seconds % 60
+            return time(hours, minutes, seconds)
+        except (ValueError, OverflowError, TypeError) as e:
+            logger.warning(f"Invalid SAS time value: {value} - {e}")
+            return None
+
+    def _is_sas_missing(self, value):
+        """Check if value represents a SAS missing value."""
+        try:
+            float_val = float(value)
+            # Check for NaN or special missing values
+            if float_val != float_val:  # NaN check
+                return True
+            # SAS missing values are typically very large negative numbers
+            if float_val < -1e10:
+                return True
+            return False
+        except (ValueError, TypeError):
+            return True
 
 
 class SASIdentifierPreparer(IdentifierPreparer):
@@ -168,6 +371,9 @@ class SASDialect(BaseDialect, DefaultDialect):
 
         # Override the identifier preparer with our custom SAS version
         self.identifier_preparer = SASIdentifierPreparer(self)
+
+        # Initialize type mapping cache for performance optimization
+        self._type_mapping_cache = {}
 
         # SAS-specific initialization if needed
         # self.default_schema_name will be set by initialize()
@@ -489,6 +695,85 @@ class SASDialect(BaseDialect, DefaultDialect):
         # This handles java.lang.Double, java.lang.Integer, etc.
         return str(value)
 
+    def _parse_sas_format(self, format_str):
+        """
+        Parse a SAS format string to extract format name, width, and decimals.
+
+        Examples:
+            "COMMA12.2" -> {"format": "COMMA", "width": 12, "decimals": 2}
+            "DATE9." -> {"format": "DATE", "width": 9, "decimals": None}
+            "DATETIME20." -> {"format": "DATETIME", "width": 20, "decimals": None}
+
+        Args:
+            format_str: SAS format string (e.g., "COMMA12.2", "DATE9.")
+
+        Returns:
+            Dictionary with format, width, and decimals keys
+        """
+        if not format_str:
+            return {"format": None, "width": None, "decimals": None}
+
+        try:
+            # Match SAS format pattern: NAME[width[.decimals]]
+            # Examples: DATE9., COMMA12.2, DOLLAR10., BEST12.
+            match = re.match(r"^([A-Z]+\$?)(\d+)?(?:\.(\d+)?)?\.?$", format_str.upper().strip())
+
+            if match:
+                format_name = match.group(1)
+                width = int(match.group(2)) if match.group(2) else None
+                decimals = int(match.group(3)) if match.group(3) else None
+
+                return {"format": format_name, "width": width, "decimals": decimals}
+            else:
+                # If regex doesn't match, try simpler parse
+                clean_format = format_str.upper().strip().rstrip(".")
+                return {"format": clean_format, "width": None, "decimals": None}
+        except Exception as e:
+            logger.warning(f"Failed to parse SAS format '{format_str}': {e}")
+            return {"format": format_str.upper() if format_str else None, "width": None, "decimals": None}
+
+    def _process_sas_numeric_value(self, value):
+        """
+        Process SAS numeric values, handling missing values and special cases.
+
+        SAS uses "." and ".A" through ".Z" for missing numeric values.
+        Also handles Java NaN and Infinity values from JDBC.
+
+        Args:
+            value: The numeric value from SAS
+
+        Returns:
+            The numeric value or None if it represents a missing value
+        """
+        if value is None:
+            return None
+
+        try:
+            # Convert to float for checking
+            float_val = float(value)
+
+            # Check for NaN (Not a Number)
+            if float_val != float_val:  # NaN check
+                logger.debug("SAS missing value detected: NaN")
+                return None
+
+            # Check for Infinity
+            if float_val == float("inf") or float_val == float("-inf"):
+                logger.debug("SAS invalid value detected: Infinity")
+                return None
+
+            # SAS missing values are typically represented as very large negative numbers
+            # Standard SAS missing value "." is approximately -1.797693e+308
+            if float_val < -1e10:
+                logger.debug(f"SAS missing value detected: {float_val}")
+                return None
+
+            return value
+
+        except (ValueError, TypeError, OverflowError) as e:
+            logger.debug(f"Invalid numeric value: {value} - {e}")
+            return None
+
     def get_columns(self, connection, table_name, schema=None, **kw):
         """
         Retrieve column metadata for a table with fallback mechanisms.
@@ -564,64 +849,218 @@ class SASDialect(BaseDialect, DefaultDialect):
 
     def _map_sas_type_to_sqlalchemy(self, sas_type, length, format_str):
         """
-        Map SAS data types to SQLAlchemy types.
+        Map SAS data types to SQLAlchemy types with comprehensive format support.
 
         SAS has two basic types (numeric and character) but uses formats
-        to indicate specialized types like dates and times.
+        to indicate specialized types like dates, times, booleans, and formatted numbers.
+
+        This method handles 50+ SAS formats including date/time, numeric, and special formats.
 
         Args:
             sas_type: SAS type ('num' or 'char')
             length: Column length (can be string representation of int or float)
-            format_str: SAS format string (e.g., 'DATE9.', 'DATETIME20.')
+            format_str: SAS format string (e.g., 'DATE9.', 'DATETIME20.', 'COMMA12.2')
 
         Returns:
             SQLAlchemy type instance
         """
-        if sas_type.lower() == "char":
-            # Length might be a float string like '50.0', convert via float first
-            return SASStringType(length=int(float(length)))
+        try:
+            # Check cache first for performance
+            cache_key = f"{sas_type}_{format_str}"
+            if cache_key in self._type_mapping_cache:
+                return self._type_mapping_cache[cache_key]
 
-        # Numeric type - check format for specialized handling
-        if format_str:
-            format_upper = format_str.upper()
+            # Handle character types
+            if sas_type.lower() == "char":
+                # Length might be a float string like '50.0', convert via float first
+                sa_type = SASStringType(length=int(float(length)))
+                self._type_mapping_cache[cache_key] = sa_type
+                return sa_type
 
-            # Check for E8601 format strings first (SAS ISO 8601 formats)
-            if format_upper.startswith("E8601DA"):
-                # E8601DA* = Date format (ISO 8601 Date)
-                return sqltypes.DATE()
+            # Numeric type - determine specific type based on format
+            if format_str:
+                # Parse the format string for detailed analysis
+                format_info = self._parse_sas_format(format_str)
+                format_name = format_info["format"]
+                decimals = format_info["decimals"]
 
-            if format_upper.startswith("E8601DT"):
-                # E8601DT* = DateTime format (ISO 8601 DateTime)
-                return sqltypes.DATETIME()
+                if format_name:
+                    # ISO 8601 formats (E8601*)
+                    if format_name.startswith("E8601DA"):
+                        # E8601DA* = Date format (ISO 8601 Date)
+                        sa_type = SASDateType()
+                        self._type_mapping_cache[cache_key] = sa_type
+                        return sa_type
 
-            # DateTime formats - check for DATETIME specifically (before DATE check)
-            if format_upper.startswith("DATETIME"):
-                return sqltypes.DATETIME()
+                    if format_name.startswith("E8601DT"):
+                        # E8601DT* = DateTime format (ISO 8601 DateTime)
+                        sa_type = SASDateTimeType()
+                        self._type_mapping_cache[cache_key] = sa_type
+                        return sa_type
 
-            # Standard SAS date formats
-            if any(fmt in format_upper for fmt in ["DATE", "DDMMYY", "MMDDYY", "YYMMDD"]):
-                return sqltypes.DATE()
+                    if format_name.startswith("E8601TM"):
+                        # E8601TM* = Time format (ISO 8601 Time)
+                        sa_type = SASTimeType()
+                        self._type_mapping_cache[cache_key] = sa_type
+                        return sa_type
 
-            # Time formats
-            if "TIME" in format_upper:
-                return sqltypes.TIME()
+                    # DateTime formats (must check before DATE)
+                    if format_name.startswith("DATETIME") or format_name == "DTYYQC":
+                        sa_type = SASDateTimeType()
+                        self._type_mapping_cache[cache_key] = sa_type
+                        return sa_type
 
-            # Check for integer formats
-            if any(fmt in format_upper for fmt in ["Z", "F", "COMMA", "DOLLAR", "NUMX"]):
-                # Could be integer or decimal depending on format
-                if "." in format_str:
-                    # Has decimal specification
-                    parts = format_str.split(".")
-                    if len(parts) == 2 and parts[1].isdigit() and int(parts[1]) > 0:
-                        # Has decimal places
-                        return sqltypes.NUMERIC()
-                    else:
-                        return sqltypes.INTEGER()
-                else:
-                    return sqltypes.INTEGER()
+                    # Timestamp formats
+                    if format_name in ["TODSTAMP", "DTMONYY", "DTWKDATX", "DTYEAR", "DTYYQC"]:
+                        sa_type = SASDateTimeType()
+                        self._type_mapping_cache[cache_key] = sa_type
+                        return sa_type
 
-        # Default numeric type
-        return sqltypes.NUMERIC()
+                    # Standard SAS date formats
+                    date_formats = [
+                        "DATE",
+                        "DAY",
+                        "DDMMYY",
+                        "MMDDYY",
+                        "YYMMDD",
+                        "YYMM",
+                        "YYMON",
+                        "YYQ",
+                        "YYQR",
+                        "JULDAY",
+                        "JULIAN",
+                        "MONYY",
+                        "MONNAME",
+                        "MONTH",
+                        "QTR",
+                        "QTRR",
+                        "WEEKDATE",
+                        "WEEKDATX",
+                        "WEEKDAY",
+                        "WORDDATE",
+                        "WORDDATX",
+                        "YEAR",
+                        "NENGO",
+                        "MINGUO",
+                        "PDJULG",
+                        "PDJULI",
+                        "EURDFDD",
+                        "EURDFDE",
+                        "EURDFDN",
+                        "EURDFDMY",
+                        "EURDFMY",
+                        "EURDFWDX",
+                        "EURDFWKX",
+                        "WEEKV",
+                    ]
+                    if any(format_name.startswith(fmt) for fmt in date_formats):
+                        sa_type = SASDateType()
+                        self._type_mapping_cache[cache_key] = sa_type
+                        return sa_type
+
+                    # Time formats
+                    time_formats = ["TIME", "TIMEAMPM", "TOD", "HHMM", "HOUR", "MMSS", "NLTIME", "NLTIMAP", "STIMER"]
+                    if any(format_name.startswith(fmt) for fmt in time_formats):
+                        sa_type = SASTimeType()
+                        self._type_mapping_cache[cache_key] = sa_type
+                        return sa_type
+
+                    # Boolean formats
+                    boolean_formats = ["YESNO", "YN", "BOOLEAN"]
+                    if format_name in boolean_formats:
+                        sa_type = sqltypes.BOOLEAN()
+                        self._type_mapping_cache[cache_key] = sa_type
+                        return sa_type
+
+                    # Numeric formats with potential decimal places
+                    numeric_formats = [
+                        "COMMA",
+                        "COMMAX",
+                        "DOLLAR",
+                        "EURX",
+                        "EURO",
+                        "PERCENT",
+                        "BEST",
+                        "NLMNY",
+                        "NLMNYI",
+                        "NLNUM",
+                        "NLNUMI",
+                        "NLPCT",
+                        "NLPCTI",
+                        "SSN",
+                        "PVALUE",
+                        "NEGPAREN",
+                        "ROMAN",
+                        "WORDS",
+                        "WORDF",
+                    ]
+                    if any(format_name.startswith(fmt) for fmt in numeric_formats):
+                        # Check if format has decimal places
+                        if decimals is not None and decimals > 0:
+                            sa_type = sqltypes.NUMERIC(precision=format_info.get("width"), scale=decimals)
+                        else:
+                            # Could be integer or float depending on usage
+                            sa_type = sqltypes.NUMERIC()
+                        self._type_mapping_cache[cache_key] = sa_type
+                        return sa_type
+
+                    # Explicit integer formats (no decimals)
+                    integer_formats = [
+                        "Z",
+                        "ZD",
+                        "BINARY",
+                        "HEX",
+                        "OCTAL",
+                        "IB",
+                        "PD",
+                        "PK",
+                        "RB",
+                        "PIB",
+                        "ZIP",
+                        "NUMX",
+                        "S370FF",
+                        "S370FIB",
+                        "S370FPIB",
+                        "S370FPD",
+                        "S370FRB",
+                        "S370FZD",
+                    ]
+                    if any(format_name.startswith(fmt) for fmt in integer_formats):
+                        sa_type = sqltypes.INTEGER()
+                        self._type_mapping_cache[cache_key] = sa_type
+                        return sa_type
+
+                    # Standard numeric format 'F' or 'NUMX' - check for decimals
+                    if format_name in ["F", "NUMX", "NUMERIC"]:
+                        if decimals is not None and decimals > 0:
+                            sa_type = sqltypes.NUMERIC(precision=format_info.get("width"), scale=decimals)
+                        else:
+                            sa_type = sqltypes.INTEGER()
+                        self._type_mapping_cache[cache_key] = sa_type
+                        return sa_type
+
+                    # Log unrecognized format for debugging
+                    logger.debug(f"Unrecognized SAS format: {format_str}, using default NUMERIC type")
+
+            # Default numeric type for unformatted or unrecognized formats
+            sa_type = sqltypes.NUMERIC()
+            self._type_mapping_cache[cache_key] = sa_type
+            return sa_type
+
+        except Exception as e:
+            # Comprehensive error handling - log and return safe default
+            logger.warning(
+                f"Error mapping SAS type to SQLAlchemy: sas_type={sas_type}, "
+                f"length={length}, format={format_str}, error={e}"
+            )
+            # Return safe default type based on sas_type
+            if sas_type.lower() == "char":
+                try:
+                    return SASStringType(length=int(float(length)))
+                except (ValueError, TypeError):
+                    return SASStringType(length=255)  # Safe default length
+            else:
+                return sqltypes.NUMERIC()  # Safe default for numeric types
 
     def get_pk_constraint(self, connection, table_name, schema=None, **kw):
         """
