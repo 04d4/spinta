@@ -36,32 +36,25 @@ class Sql(ExternalBackend):
             raise BackendUnavailable(self)
 
     def get_table(self, model: Model, name: str = None) -> sa.Table:
-        import logging
+        """
+        Get or create a SQLAlchemy Table object for a model.
 
-        logger = logging.getLogger(__name__)
+        Args:
+            model: The model to get the table for
+            name: Optional table name override
 
+        Returns:
+            SQLAlchemy Table object
+        """
         name = name or model.external.name
 
-        # For SAS dialect, use dialect's default_schema_name if backend's dbschema is None
-        effective_schema = self.dbschema
-        is_sas = self.engine.dialect.name == "sas"
-
-        if is_sas and not effective_schema and hasattr(self.engine.dialect, "default_schema_name"):
-            effective_schema = self.engine.dialect.default_schema_name
-            logger.debug(f"Using dialect's default_schema_name: '{effective_schema}'")
-
-        if effective_schema:
-            key = f"{effective_schema}.{name}"
+        if self.dbschema:
+            key = f"{self.dbschema}.{name}"
         else:
             key = name
 
         if key not in self.schema.tables:
-            if effective_schema and is_sas:
-                logger.debug(f"Creating SAS table '{name}' with schema='{effective_schema}'")
-                sa.Table(name, self.schema, autoload_with=self.engine, schema=effective_schema)
-            else:
-                logger.debug(f"Creating table '{name}' without explicit schema")
-                sa.Table(name, self.schema, autoload_with=self.engine)
+            sa.Table(name, self.schema, autoload_with=self.engine, schema=self.dbschema)
 
         return self.schema.tables[key]
 
