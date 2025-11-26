@@ -33,13 +33,13 @@ class SAS(Sql):
     type = "sql/sas"
     query_builder_type = "sql/sas"
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, **kwargs):
         """
         Initialize the SAS backend.
 
         Extracts schema from the DSN URL if not already set.
         """
-        super().__init__(*args, **kwargs)
+        super().__init__(**kwargs)
         # Extract schema from DSN URL if not already set
         if hasattr(self, "dsn") and self.dsn and not self.dbschema:
             from sqlalchemy.engine.url import make_url

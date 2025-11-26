@@ -18,12 +18,6 @@ import re
 import logging
 from sqlalchemy import types as sqltypes
 
-from spinta.datasets.backends.sql.backends.sas.types import (
-    SASStringType,
-    SASDateType,
-    SASDateTimeType,
-    SASTimeType,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -286,7 +280,7 @@ def map_sas_type_to_sqlalchemy(sas_type: str | None, length, format_str: str | N
         # Handle character types
         if sas_type and sas_type.lower() == "char":
             # Length might be a float string like '50.0', convert via float first
-            sa_type = SASStringType(length=int(float(length)))
+            sa_type = sqltypes.VARCHAR(length=int(float(length)))
             if cache is not None:
                 cache[cache_key] = sa_type
             return sa_type
@@ -302,49 +296,49 @@ def map_sas_type_to_sqlalchemy(sas_type: str | None, length, format_str: str | N
                 # ISO 8601 formats (E8601*)
                 if format_name.startswith(ISO_DATE_PREFIXES):
                     # E8601DA* = Date format (ISO 8601 Date)
-                    sa_type = SASDateType()
+                    sa_type = sqltypes.DATE()
                     if cache is not None:
                         cache[cache_key] = sa_type
                     return sa_type
 
                 if format_name.startswith(ISO_DATETIME_PREFIXES):
                     # E8601DT* = DateTime format (ISO 8601 DateTime)
-                    sa_type = SASDateTimeType()
+                    sa_type = sqltypes.DATETIME()
                     if cache is not None:
                         cache[cache_key] = sa_type
                     return sa_type
 
                 if format_name.startswith(ISO_TIME_PREFIXES):
                     # E8601TM* = Time format (ISO 8601 Time)
-                    sa_type = SASTimeType()
+                    sa_type = sqltypes.TIME()
                     if cache is not None:
                         cache[cache_key] = sa_type
                     return sa_type
 
                 # DateTime formats (must check before DATE)
                 if format_name.startswith("DATETIME") or format_name in DATETIME_FORMATS:
-                    sa_type = SASDateTimeType()
+                    sa_type = sqltypes.DATETIME()
                     if cache is not None:
                         cache[cache_key] = sa_type
                     return sa_type
 
                 # Timestamp formats
                 if format_name in TIMESTAMP_FORMATS:
-                    sa_type = SASDateTimeType()
+                    sa_type = sqltypes.DATETIME()
                     if cache is not None:
                         cache[cache_key] = sa_type
                     return sa_type
 
                 # Standard SAS date formats
                 if any(format_name.startswith(fmt) for fmt in DATE_FORMATS):
-                    sa_type = SASDateType()
+                    sa_type = sqltypes.DATE()
                     if cache is not None:
                         cache[cache_key] = sa_type
                     return sa_type
 
                 # Time formats
                 if any(format_name.startswith(fmt) for fmt in TIME_FORMATS):
-                    sa_type = SASTimeType()
+                    sa_type = sqltypes.TIME()
                     if cache is not None:
                         cache[cache_key] = sa_type
                     return sa_type
@@ -362,8 +356,8 @@ def map_sas_type_to_sqlalchemy(sas_type: str | None, length, format_str: str | N
                     if decimals is not None and decimals > 0:
                         sa_type = sqltypes.NUMERIC(precision=format_info.get("width"), scale=decimals)
                     else:
-                        # Could be integer or float depending on usage
-                        sa_type = sqltypes.NUMERIC()
+                        # No decimals - treat as integer
+                        sa_type = sqltypes.INTEGER()
                     if cache is not None:
                         cache[cache_key] = sa_type
                     return sa_type
@@ -403,8 +397,8 @@ def map_sas_type_to_sqlalchemy(sas_type: str | None, length, format_str: str | N
         # Return safe default type based on sas_type
         if sas_type and sas_type.lower() == "char":
             try:
-                return SASStringType(length=int(float(length)))
+                return sqltypes.VARCHAR(length=int(float(length)))
             except (ValueError, TypeError):
-                return SASStringType(length=255)  # Safe default length
+                return sqltypes.VARCHAR(length=255)  # Safe default length
         else:
             return sqltypes.NUMERIC()  # Safe default for numeric types

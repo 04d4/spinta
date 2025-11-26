@@ -180,18 +180,18 @@ class TestSASHelpers:
 
     def test_sas_time_to_python_invalid_negative(self):
         """Test error handling for negative time values."""
-        with pytest.raises(ValueError, match="Time value must be between 0 and 86400"):
+        with pytest.raises(ValueError, match="Invalid SAS time value: -1"):
             sas_time_to_python(-1)
 
-        with pytest.raises(ValueError, match="Time value must be between 0 and 86400"):
+        with pytest.raises(ValueError, match="Invalid SAS time value: -3600"):
             sas_time_to_python(-3600)
 
     def test_sas_time_to_python_invalid_too_large(self):
         """Test error handling for time values >= 86400 (24 hours)."""
-        with pytest.raises(ValueError, match="Time value must be between 0 and 86400"):
+        with pytest.raises(ValueError, match="Invalid SAS time value: 86400"):
             sas_time_to_python(86400)
 
-        with pytest.raises(ValueError, match="Time value must be between 0 and 86400"):
+        with pytest.raises(ValueError, match="Invalid SAS time value: 100000"):
             sas_time_to_python(100000)
 
     def test_sas_time_to_python_invalid_type(self):

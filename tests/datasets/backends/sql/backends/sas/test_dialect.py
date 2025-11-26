@@ -3,6 +3,7 @@ from sqlalchemy import types as sqltypes
 from sqlalchemy.engine.url import make_url
 
 from spinta.datasets.backends.sql.backends.sas.dialect import SASDialect, register_sas_dialect
+from spinta.datasets.backends.sql.backends.sas.formats import map_sas_type_to_sqlalchemy
 
 
 class TestSASDialect:
@@ -105,7 +106,7 @@ class TestSASDialect:
         dialect = SASDialect()
 
         # Test character type mapping
-        sa_type = dialect._map_sas_type_to_sqlalchemy("char", 50, None)
+        sa_type = map_sas_type_to_sqlalchemy("char", 50, None)
 
         assert isinstance(sa_type, sqltypes.VARCHAR)
         assert sa_type.length == 50
@@ -116,7 +117,7 @@ class TestSASDialect:
 
         # Test with various date formats
         for date_format in ["DATE9.", "DDMMYY10.", "MMDDYY8.", "YYMMDD10."]:
-            sa_type = dialect._map_sas_type_to_sqlalchemy("num", 8, date_format)
+            sa_type = map_sas_type_to_sqlalchemy("num", 8, date_format)
             assert isinstance(sa_type, sqltypes.DATE), f"Failed for format {date_format}"
 
     def test_type_mapping_num_datetime(self):
@@ -125,7 +126,7 @@ class TestSASDialect:
 
         # Test with datetime formats
         for datetime_format in ["DATETIME20.", "DATETIME19.", "DATETIME."]:
-            sa_type = dialect._map_sas_type_to_sqlalchemy("num", 8, datetime_format)
+            sa_type = map_sas_type_to_sqlalchemy("num", 8, datetime_format)
             assert isinstance(sa_type, sqltypes.DATETIME), f"Failed for format {datetime_format}"
 
     def test_type_mapping_num_time(self):
@@ -134,7 +135,7 @@ class TestSASDialect:
 
         # Test with time formats
         for time_format in ["TIME8.", "TIME12.", "TIME."]:
-            sa_type = dialect._map_sas_type_to_sqlalchemy("num", 8, time_format)
+            sa_type = map_sas_type_to_sqlalchemy("num", 8, time_format)
             assert isinstance(sa_type, sqltypes.TIME), f"Failed for format {time_format}"
 
     def test_type_mapping_num_default(self):
@@ -142,7 +143,7 @@ class TestSASDialect:
         dialect = SASDialect()
 
         # Test numeric without specific format
-        sa_type = dialect._map_sas_type_to_sqlalchemy("num", 8, None)
+        sa_type = map_sas_type_to_sqlalchemy("num", 8, None)
         assert isinstance(sa_type, sqltypes.NUMERIC)
 
     def test_type_mapping_num_with_integer_format(self):
@@ -151,7 +152,7 @@ class TestSASDialect:
 
         # Test formats that indicate integers
         for int_format in ["Z8.", "F10.", "COMMA10.", "DOLLAR12."]:
-            sa_type = dialect._map_sas_type_to_sqlalchemy("num", 8, int_format)
+            sa_type = map_sas_type_to_sqlalchemy("num", 8, int_format)
             assert isinstance(sa_type, sqltypes.INTEGER), f"Failed for format {int_format}"
 
     def test_type_mapping_num_with_decimal_format(self):
@@ -159,10 +160,10 @@ class TestSASDialect:
         dialect = SASDialect()
 
         # Test formats with decimal places
-        sa_type = dialect._map_sas_type_to_sqlalchemy("num", 8, "COMMA10.2")
+        sa_type = map_sas_type_to_sqlalchemy("num", 8, "COMMA10.2")
         assert isinstance(sa_type, sqltypes.NUMERIC)
 
-        sa_type = dialect._map_sas_type_to_sqlalchemy("num", 8, "DOLLAR12.2")
+        sa_type = map_sas_type_to_sqlalchemy("num", 8, "DOLLAR12.2")
         assert isinstance(sa_type, sqltypes.NUMERIC)
 
     def test_normalize_name(self):
@@ -247,7 +248,6 @@ class TestSASDialect:
 
         assert result == []
 
-    @patch("spinta.datasets.backends.sql.backends.sas.dialect.registry")
     def test_initialize(self):
         """Test dialect initialization."""
         dialect = SASDialect()
@@ -277,23 +277,6 @@ class TestSASDialect:
         assert sqltypes.Date in dialect.colspecs
         assert sqltypes.DateTime in dialect.colspecs
 
-    def test_jvm_memory_configuration(self):
-        """Test that JVM memory settings are configured properly."""
-        from unittest.mock import patch
-        import os
-
-        dialect = SASDialect()
-
-        # Mock os.environ to test JVM configuration
-        with patch.dict(os.environ, {}, clear=True):
-            dialect._configure_jvm_memory()
-
-            # Check that JVM options were set
-            jvm_opts = os.environ.get("_JAVA_OPTIONS", "")
-            assert "-Xms256m" in jvm_opts  # Minimum heap
-            assert "-Xmx1g" in jvm_opts  # Maximum heap
-            assert "-XX:+UseG1GC" in jvm_opts  # Garbage collector
-
     def test_connection_pooling_configuration(self):
         """Test that connection pooling is configured with SAS-specific settings."""
         dialect = SASDialect()
@@ -302,7 +285,6 @@ class TestSASDialect:
         # The actual pool configuration happens in __init__, so we verify
         # the dialect was created successfully with enhanced settings
         assert dialect.name == "sas"
-        assert hasattr(dialect, "_configure_jvm_memory")
 
     def test_error_handling_in_get_schema_names(self):
         """Test that get_schema_names handles errors gracefully."""
@@ -390,14 +372,11 @@ class TestSASDialect:
 
     def test_create_connect_args_error_handling(self):
         """Test that create_connect_args handles errors gracefully."""
-        from unittest.mock import patch
         from sqlalchemy.engine.url import make_url
 
         dialect = SASDialect()
         url = make_url("sas+jdbc://test:pass@localhost:8591")
 
-        # Mock _configure_jvm_memory to raise an exception
-        with patch.object(dialect, "_configure_jvm_memory", side_effect=Exception("JVM config error")):
-            # The JVM config is commented out, so this should not raise an exception
-            args, kwargs = dialect.create_connect_args(url)
-            assert kwargs["jclassname"] == "com.sas.rio.MVADriver"
+        # Test that create_connect_args works normally
+        args, kwargs = dialect.create_connect_args(url)
+        assert kwargs["jclassname"] == "com.sas.rio.MVADriver"
