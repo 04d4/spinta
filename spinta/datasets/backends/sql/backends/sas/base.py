@@ -61,10 +61,17 @@ class BaseDialect:
         Returns:
             True if the exception indicates a disconnection, False otherwise
         """
-        if not isinstance(e, self.dbapi().ProgrammingError):
-            return False
-        e = str(e)
-        return "connection is closed" in e or "cursor is closed" in e
+        try:
+            import jaydebeapi
+
+            # Check if it's a jaydebeapi DatabaseError
+            if isinstance(e, jaydebeapi.DatabaseError):
+                e_str = str(e)
+                return "connection is closed" in e_str or "cursor is closed" in e_str
+        except (ImportError, AttributeError):
+            pass
+
+        return False
 
     def do_rollback(self, dbapi_connection):
         """
