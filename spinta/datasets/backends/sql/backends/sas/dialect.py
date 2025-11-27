@@ -39,15 +39,67 @@ class SASCompiler(SQLCompiler):
 
     Ensures that table names are always qualified with the schema (library name)
     to prevent SAS from defaulting to the WORK library.
+
+    Also handles SAS-specific LIMIT syntax by applying (OBS=n) table options
+    instead of standard LIMIT clauses.
     """
 
-    def visit_table(self, table: Table, asfrom=False, **kw):
+    def visit_select(self, select, **kwargs):
+        """
+        Override SELECT compilation to store limit for table references.
+
+        In SAS, LIMIT must be applied as (OBS=n) on table references in the
+        FROM clause, not as a separate LIMIT clause at the end of the query.
+        This method stores the limit value during compilation so it can be
+        applied to table references in visit_table.
+
+        Args:
+            select: The SQLAlchemy Select object being compiled
+            **kwargs: All keyword arguments passed to parent's visit_select
+
+        Returns:
+            The compiled SELECT statement string
+        """
+        # Store current limit before visiting components
+        old_limit = getattr(self, "_sas_current_limit", None)
+
+        # Extract limit value from select object
+        # Use getattr with None default for safety
+        limit_value = getattr(select, "_limit", None)
+        self._sas_current_limit = limit_value
+
+        logger.debug(f"SAS visit_select: stored limit={self._sas_current_limit}")
+
+        try:
+            # Call parent with all kwargs - let SQLAlchemy handle its internal state
+            result = super().visit_select(select, **kwargs)
+            return result
+        finally:
+            # Restore previous limit for nested SELECTs
+            self._sas_current_limit = old_limit
+
+    def visit_table(
+        self,
+        table: Table,
+        asfrom: bool = False,
+        iscrud: bool = False,
+        ashint: bool = False,
+        fromhints=None,
+        use_schema: bool = True,
+        crud_table=None,
+        **kw,
+    ):
         """
         Visit a Table object and compile its name, ensuring schema qualification.
 
         Args:
             table: The SQLAlchemy Table object.
             asfrom: Boolean indicating if the table is in a FROM clause.
+            iscrud: Boolean indicating if the table is part of a CRUD operation.
+            ashint: Boolean indicating if the table is part of a hint.
+            fromhints: Hints for the FROM clause.
+            use_schema: Boolean indicating if schema should be used.
+            crud_table: The table object for CRUD operations.
             **kw: Additional keyword arguments.
 
         Returns:
@@ -55,17 +107,51 @@ class SASCompiler(SQLCompiler):
         """
         # CRITICAL FIX: If table.schema is None but we have a default_schema_name, set it
         # This ensures SAS tables are always qualified with the library name
-        if asfrom and not table.schema and hasattr(self.dialect, "default_schema_name"):
-            schema = self.dialect.default_schema_name
-            if schema:
-                table.schema = schema
+        if asfrom and not table.schema:
+            # Access self.dialect directly, as it's guaranteed to be a SASDialect instance at this point
+            # and hasattr check is sufficient for dynamic attribute access.
+            if hasattr(self.dialect, "default_schema_name") and self.dialect.default_schema_name:
+                table.schema = self.dialect.default_schema_name
 
-        if asfrom and table.schema:
-            # Ensure schema is always included for tables in FROM clauses
-            # Use self.preparer which is the IdentifierPreparer instance
-            return self.preparer.format_table(table)
+        # Get the compiled table name using parent logic
+        result = super().visit_table(
+            table,
+            asfrom=asfrom,
+            iscrud=iscrud,
+            ashint=ashint,
+            fromhints=fromhints,
+            use_schema=use_schema,
+            crud_table=crud_table,
+            **kw,
+        )
 
-        return super().visit_table(table, asfrom=asfrom, **kw)
+        # For SAS, append (OBS=n) to the table reference when limit is present
+        # This must be done in the FROM clause, not at the end of the query
+        if asfrom and hasattr(self, "_sas_current_limit") and self._sas_current_limit is not None:
+            result += f" (OBS={self._sas_current_limit})"
+            logger.debug(f"Applied SAS limit: {result}")
+
+        return result
+
+    def limit_clause(self, select, **kw):
+        """
+        Suppress the default LIMIT clause for SAS.
+
+        In SAS, limits are applied as (OBS=n) table options on the
+        table reference in the FROM clause (handled in visit_table),
+        not as a separate LIMIT clause at the end of the query.
+
+        This method returns an empty string to prevent SQLAlchemy from
+        appending a standard LIMIT clause, which would cause a syntax error.
+
+        Args:
+            select: The Select object being compiled
+            **kw: Additional keyword arguments
+
+        Returns:
+            Empty string (suppresses LIMIT clause)
+        """
+        return ""
 
 
 class SASDialect(SASIntrospectionMixin, BaseDialect, DefaultDialect):
