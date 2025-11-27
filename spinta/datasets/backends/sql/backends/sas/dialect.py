@@ -320,13 +320,9 @@ class SASDialect(SASIntrospectionMixin, BaseDialect, DefaultDialect):
             if url.port:
                 jdbc_url += f":{url.port}"
 
-            # Add query parameters to JDBC URL if present
-            if url.query:
-                from urllib.parse import urlencode
-
-                query_string = urlencode(url.query)
-                jdbc_url += f"?{query_string}"
-
+            # Do not append URL query parameters to the JDBC URL itself.
+            # Schema (and other options) are passed via driver properties
+            # in `driver_args` so the JDBC URL remains clean.
             logger.debug(f"Built JDBC URL: {jdbc_url}")
 
             # Base driver arguments
@@ -359,7 +355,8 @@ class SASDialect(SASIntrospectionMixin, BaseDialect, DefaultDialect):
             else:
                 jars = []
 
-            # Add query parameters if present
+            # Keep query parameters available for logging and for adding
+            # relevant driver properties (schema is handled above).
             if url.query:
                 logger.debug(f"Query parameters: {dict(url.query)}")
 
