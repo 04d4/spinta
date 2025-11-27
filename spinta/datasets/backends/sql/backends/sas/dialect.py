@@ -17,6 +17,8 @@ from pathlib import Path
 
 from sqlalchemy import pool, types as sqltypes
 from sqlalchemy.engine.default import DefaultDialect
+from sqlalchemy.sql.compiler import SQLCompiler
+from sqlalchemy.schema import Table
 
 from spinta.datasets.backends.sql.backends.sas.base import BaseDialect
 from spinta.datasets.backends.sql.backends.sas.identifier import SASIdentifierPreparer
@@ -29,6 +31,41 @@ from spinta.datasets.backends.sql.backends.sas.types import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+class SASCompiler(SQLCompiler):
+    """
+    Custom SQL compiler for SAS dialect.
+
+    Ensures that table names are always qualified with the schema (library name)
+    to prevent SAS from defaulting to the WORK library.
+    """
+
+    def visit_table(self, table: Table, asfrom=False, **kw):
+        """
+        Visit a Table object and compile its name, ensuring schema qualification.
+
+        Args:
+            table: The SQLAlchemy Table object.
+            asfrom: Boolean indicating if the table is in a FROM clause.
+            **kw: Additional keyword arguments.
+
+        Returns:
+            The compiled table name with schema.
+        """
+        # CRITICAL FIX: If table.schema is None but we have a default_schema_name, set it
+        # This ensures SAS tables are always qualified with the library name
+        if asfrom and not table.schema and hasattr(self.dialect, "default_schema_name"):
+            schema = self.dialect.default_schema_name
+            if schema:
+                table.schema = schema
+
+        if asfrom and table.schema:
+            # Ensure schema is always included for tables in FROM clauses
+            # Use self.preparer which is the IdentifierPreparer instance
+            return self.preparer.format_table(table)
+
+        return super().visit_table(table, asfrom=asfrom, **kw)
 
 
 class SASDialect(SASIntrospectionMixin, BaseDialect, DefaultDialect):
@@ -52,6 +89,9 @@ class SASDialect(SASIntrospectionMixin, BaseDialect, DefaultDialect):
 
     # SAS identifier limitation (32 characters max)
     max_identifier_length = 32
+
+    # Custom compiler for SAS
+    statement_compiler = SASCompiler
 
     # Feature support flags
     supports_comments = True
@@ -194,6 +234,13 @@ class SASDialect(SASIntrospectionMixin, BaseDialect, DefaultDialect):
             if url.port:
                 jdbc_url += f":{url.port}"
 
+            # Add query parameters to JDBC URL if present
+            if url.query:
+                from urllib.parse import urlencode
+
+                query_string = urlencode(url.query)
+                jdbc_url += f"?{query_string}"
+
             logger.debug(f"Built JDBC URL: {jdbc_url}")
 
             # Base driver arguments
@@ -204,6 +251,13 @@ class SASDialect(SASIntrospectionMixin, BaseDialect, DefaultDialect):
                 "password": url.password or "",
                 "applyFormats": "false",
             }
+
+            # Add schema to driver_args if present in query
+            if url.query:
+                schema = url.query.get("schema")
+                if schema:
+                    driver_args["schema"] = schema
+                    logger.debug(f"Added schema '{schema}' to driver_args")
 
             # Log driver_args with types for debugging
             logger.debug(f"Driver args with types: {[(k, type(v).__name__, v) for k, v in driver_args.items()]}")

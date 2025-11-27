@@ -74,7 +74,6 @@ class SAS(Sql):
         effective_schema = self.dbschema
         if not effective_schema and hasattr(self.engine.dialect, "default_schema_name"):
             effective_schema = self.engine.dialect.default_schema_name
-            logger.debug(f"Using dialect's default_schema_name: '{effective_schema}'")
 
         if effective_schema:
             key = f"{effective_schema}.{name}"
@@ -82,7 +81,22 @@ class SAS(Sql):
             key = name
 
         if key not in self.schema.tables:
-            logger.debug(f"Creating SAS table '{name}' with schema='{effective_schema}'")
+            # Ensure the dialect has the correct schema set before reflection
+            if hasattr(self.engine.dialect, "default_schema_name"):
+                self.engine.dialect.default_schema_name = effective_schema
+
+            # Create table with schema - SQLAlchemy will store it with the schema in the key
             sa.Table(name, self.schema, autoload_with=self.engine, schema=effective_schema)
 
-        return self.schema.tables[key]
+        # Try to get the table with schema first, then without
+        if key in self.schema.tables:
+            return self.schema.tables[key]
+        elif name in self.schema.tables:
+            # Fallback: table might be stored without schema prefix
+            return self.schema.tables[name]
+        else:
+            # Last resort: search for the table by name
+            for table_key, table_obj in self.schema.tables.items():
+                if table_obj.name == name:
+                    return table_obj
+            raise KeyError(f"Table '{name}' not found in schema")

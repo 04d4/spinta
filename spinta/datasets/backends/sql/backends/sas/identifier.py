@@ -50,3 +50,23 @@ class SASIdentifierPreparer(IdentifierPreparer):
             Always False for SAS
         """
         return False
+
+    def format_table(self, table, use_schema=True, name=None):
+        """
+        Format a table identifier for use in SQL statements.
+
+        Ensures that table names include the schema (library) name when present.
+        This is critical for SAS because without the schema, SAS defaults to the WORK library.
+
+        Args:
+            table: SQLAlchemy Table object
+            use_schema: Whether to include the schema (default True)
+            name: Optional name override
+
+        Returns:
+            Formatted table identifier string
+        """
+        # Always include schema for SAS if it's set on the table
+        if table.schema:
+            return f"{table.schema}.{table.name}"
+        return table.name
