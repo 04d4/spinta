@@ -17,6 +17,7 @@ SASDialect class to provide these introspection capabilities.
 import logging
 
 from spinta.datasets.backends.sql.backends.sas.formats import map_sas_type_to_sqlalchemy
+from spinta.datasets.backends.sql.backends.sas.constants import is_sas_missing_value
 
 logger = logging.getLogger(__name__)
 
@@ -78,34 +79,10 @@ class SASIntrospectionMixin:
         Returns:
             The numeric value or None if it represents a missing value
         """
-        if value is None:
+        if is_sas_missing_value(value):
             return None
 
-        try:
-            # Convert to float for checking
-            float_val = float(value)
-
-            # Check for NaN (Not a Number)
-            if float_val != float_val:  # NaN check
-                logger.debug("SAS missing value detected: NaN")
-                return None
-
-            # Check for Infinity
-            if float_val == float("inf") or float_val == float("-inf"):
-                logger.debug("SAS invalid value detected: Infinity")
-                return None
-
-            # SAS missing values are typically represented as very large negative numbers
-            # Standard SAS missing value "." is approximately -1.797693e+308
-            if float_val < -1e10:
-                logger.debug(f"SAS missing value detected: {float_val}")
-                return None
-
-            return value
-
-        except (ValueError, TypeError, OverflowError) as e:
-            logger.debug(f"Invalid numeric value: {value} - {e}")
-            return None
+        return value
 
     def get_schema_names(self, connection, **kw):
         """
