@@ -15,42 +15,16 @@ and Python native types.
 """
 
 import logging
-from datetime import datetime, date, time, timedelta
+from datetime import time, timedelta
 from sqlalchemy import types as sqltypes
 
+from spinta.datasets.backends.sql.backends.sas.constants import (
+    SAS_EPOCH_DATE,
+    SAS_EPOCH_DATETIME,
+    is_sas_missing_value
+)
+
 logger = logging.getLogger(__name__)
-
-# SAS epoch: January 1, 1960
-SAS_EPOCH_DATE = date(1960, 1, 1)
-SAS_EPOCH_DATETIME = datetime(1960, 1, 1, 0, 0, 0)
-
-
-def is_sas_missing_value(value) -> bool:
-    """
-    Check if a value represents a SAS missing value.
-
-    SAS uses special values for missing data:
-    - NaN for numeric missing values
-    - Very large negative numbers (< -1e10) for special missing values
-      (Standard SAS missing value "." is approximately -1.797693e+308)
-
-    Args:
-        value: The value to check
-
-    Returns:
-        True if the value represents a SAS missing value, False otherwise
-    """
-    try:
-        float_val = float(value)
-        # Check for NaN (Not a Number)
-        if float_val != float_val:  # NaN check
-            return True
-        # SAS missing values are typically very large negative numbers
-        if float_val < -1e10:
-            return True
-        return False
-    except (ValueError, TypeError):
-        return True
 
 
 class SASStringType(sqltypes.TypeDecorator):
@@ -110,6 +84,10 @@ class SASStringType(sqltypes.TypeDecorator):
                     value = value.decode("utf-8", errors="replace")
             except (UnicodeDecodeError, AttributeError):
                 pass
+
+            # Check for SAS missing value string representations
+            if is_sas_missing_value(value):
+                return None
 
             return value
 

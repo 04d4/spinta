@@ -203,6 +203,9 @@ STANDARD_NUMERIC_FORMATS = frozenset(
 # Format Parsing Functions
 # =============================================================================
 
+# Pre-compiled regex for performance
+_SAS_FORMAT_REGEX = re.compile(r"^([A-Z]+\$?)(\d+)?(?:\.(\d+)?)?\.?$", re.IGNORECASE)
+
 
 def parse_sas_format(format_str: str) -> dict:
     """
@@ -227,11 +230,11 @@ def parse_sas_format(format_str: str) -> dict:
 
     try:
         # Match SAS format pattern: NAME[width[.decimals]]
-        # Examples: DATE9., COMMA12.2, DOLLAR10., BEST12.
-        match = re.match(r"^([A-Z]+\$?)(\d+)?(?:\.(\d+)?)?\.?$", format_str.upper().strip())
+        match = _SAS_FORMAT_REGEX.match(format_str.strip())
 
         if match:
-            format_name = match.group(1)
+            # Group 1 is format name (case insensitive in regex, but we upper it)
+            format_name = match.group(1).upper()
             width = int(match.group(2)) if match.group(2) else None
             decimals = int(match.group(3)) if match.group(3) else None
 
@@ -280,7 +283,12 @@ def map_sas_type_to_sqlalchemy(sas_type: str | None, length, format_str: str | N
         # Handle character types
         if sas_type and sas_type.lower() == "char":
             # Length might be a float string like '50.0', convert via float first
-            sa_type = sqltypes.VARCHAR(length=int(float(length)))
+            try:
+                char_len = int(float(length))
+            except (ValueError, TypeError):
+                char_len = 255  # Default fallback
+
+            sa_type = sqltypes.VARCHAR(length=char_len)
             if cache is not None:
                 cache[cache_key] = sa_type
             return sa_type
@@ -295,21 +303,18 @@ def map_sas_type_to_sqlalchemy(sas_type: str | None, length, format_str: str | N
             if format_name:
                 # ISO 8601 formats (E8601*)
                 if format_name.startswith(ISO_DATE_PREFIXES):
-                    # E8601DA* = Date format (ISO 8601 Date)
                     sa_type = sqltypes.DATE()
                     if cache is not None:
                         cache[cache_key] = sa_type
                     return sa_type
 
                 if format_name.startswith(ISO_DATETIME_PREFIXES):
-                    # E8601DT* = DateTime format (ISO 8601 DateTime)
                     sa_type = sqltypes.DATETIME()
                     if cache is not None:
                         cache[cache_key] = sa_type
                     return sa_type
 
                 if format_name.startswith(ISO_TIME_PREFIXES):
-                    # E8601TM* = Time format (ISO 8601 Time)
                     sa_type = sqltypes.TIME()
                     if cache is not None:
                         cache[cache_key] = sa_type
@@ -330,18 +335,21 @@ def map_sas_type_to_sqlalchemy(sas_type: str | None, length, format_str: str | N
                     return sa_type
 
                 # Standard SAS date formats
-                if any(format_name.startswith(fmt) for fmt in DATE_FORMATS):
-                    sa_type = sqltypes.DATE()
-                    if cache is not None:
-                        cache[cache_key] = sa_type
-                    return sa_type
+                # Use simple startswith check which is faster than regex for fixed prefixes
+                for fmt in DATE_FORMATS:
+                    if format_name.startswith(fmt):
+                        sa_type = sqltypes.DATE()
+                        if cache is not None:
+                            cache[cache_key] = sa_type
+                        return sa_type
 
                 # Time formats
-                if any(format_name.startswith(fmt) for fmt in TIME_FORMATS):
-                    sa_type = sqltypes.TIME()
-                    if cache is not None:
-                        cache[cache_key] = sa_type
-                    return sa_type
+                for fmt in TIME_FORMATS:
+                    if format_name.startswith(fmt):
+                        sa_type = sqltypes.TIME()
+                        if cache is not None:
+                            cache[cache_key] = sa_type
+                        return sa_type
 
                 # Boolean formats
                 if format_name in BOOLEAN_FORMATS:
@@ -351,23 +359,25 @@ def map_sas_type_to_sqlalchemy(sas_type: str | None, length, format_str: str | N
                     return sa_type
 
                 # Numeric formats with potential decimal places
-                if any(format_name.startswith(fmt) for fmt in NUMERIC_FORMATS):
-                    # Check if format has decimal places
-                    if decimals is not None and decimals > 0:
-                        sa_type = sqltypes.NUMERIC(precision=format_info.get("width"), scale=decimals)
-                    else:
-                        # No decimals - treat as integer
-                        sa_type = sqltypes.INTEGER()
-                    if cache is not None:
-                        cache[cache_key] = sa_type
-                    return sa_type
+                for fmt in NUMERIC_FORMATS:
+                    if format_name.startswith(fmt):
+                        # Check if format has decimal places
+                        if decimals is not None and decimals > 0:
+                            sa_type = sqltypes.NUMERIC(precision=format_info.get("width"), scale=decimals)
+                        else:
+                            # No decimals - treat as integer
+                            sa_type = sqltypes.INTEGER()
+                        if cache is not None:
+                            cache[cache_key] = sa_type
+                        return sa_type
 
                 # Explicit integer formats (no decimals)
-                if any(format_name.startswith(fmt) for fmt in INTEGER_FORMATS):
-                    sa_type = sqltypes.INTEGER()
-                    if cache is not None:
-                        cache[cache_key] = sa_type
-                    return sa_type
+                for fmt in INTEGER_FORMATS:
+                    if format_name.startswith(fmt):
+                        sa_type = sqltypes.INTEGER()
+                        if cache is not None:
+                            cache[cache_key] = sa_type
+                        return sa_type
 
                 # Standard numeric format 'F' or 'NUMX' - check for decimals
                 if format_name in STANDARD_NUMERIC_FORMATS:

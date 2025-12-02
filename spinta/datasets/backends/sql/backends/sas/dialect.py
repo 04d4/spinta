@@ -105,33 +105,43 @@ class SASCompiler(SQLCompiler):
         Returns:
             The compiled table name with schema.
         """
-        # CRITICAL FIX: If table.schema is None but we have a default_schema_name, set it
-        # This ensures SAS tables are always qualified with the library name
-        if asfrom and not table.schema:
-            # Access self.dialect directly, as it's guaranteed to be a SASDialect instance at this point
-            # and hasattr check is sufficient for dynamic attribute access.
-            if hasattr(self.dialect, "default_schema_name") and self.dialect.default_schema_name:
-                table.schema = self.dialect.default_schema_name
+        # Store original schema to restore it later
+        original_schema = table.schema
+        schema_modified = False
 
-        # Get the compiled table name using parent logic
-        result = super().visit_table(
-            table,
-            asfrom=asfrom,
-            iscrud=iscrud,
-            ashint=ashint,
-            fromhints=fromhints,
-            use_schema=use_schema,
-            crud_table=crud_table,
-            **kw,
-        )
+        try:
+            # CRITICAL FIX: If table.schema is None but we have a default_schema_name, set it
+            # This ensures SAS tables are always qualified with the library name
+            if asfrom and not table.schema:
+                # Access self.dialect directly, as it's guaranteed to be a SASDialect instance at this point
+                # and hasattr check is sufficient for dynamic attribute access.
+                if hasattr(self.dialect, "default_schema_name") and self.dialect.default_schema_name:
+                    table.schema = self.dialect.default_schema_name
+                    schema_modified = True
 
-        # For SAS, append (OBS=n) to the table reference when limit is present
-        # This must be done in the FROM clause, not at the end of the query
-        if asfrom and hasattr(self, "_sas_current_limit") and self._sas_current_limit is not None:
-            result += f" (OBS={self._sas_current_limit})"
-            logger.debug(f"Applied SAS limit: {result}")
+            # Get the compiled table name using parent logic
+            result = super().visit_table(
+                table,
+                asfrom=asfrom,
+                iscrud=iscrud,
+                ashint=ashint,
+                fromhints=fromhints,
+                use_schema=use_schema,
+                crud_table=crud_table,
+                **kw,
+            )
 
-        return result
+            # For SAS, append (OBS=n) to the table reference when limit is present
+            # This must be done in the FROM clause, not at the end of the query
+            if asfrom and hasattr(self, "_sas_current_limit") and self._sas_current_limit is not None:
+                result += f" (OBS={self._sas_current_limit})"
+                logger.debug(f"Applied SAS limit: {result}")
+
+            return result
+        finally:
+            # Restore original schema if we modified it
+            if schema_modified:
+                table.schema = original_schema
 
     def limit_clause(self, select, **kw):
         """
