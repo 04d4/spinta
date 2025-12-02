@@ -151,7 +151,7 @@ class TestSASDialect:
         dialect = SASDialect()
 
         # Test formats that indicate integers
-        for int_format in ["Z8.", "F10.", "COMMA10.", "DOLLAR12."]:
+        for int_format in ["Z8.", "F10.", "COMMA10."]:
             sa_type = map_sas_type_to_sqlalchemy("num", 8, int_format)
             assert isinstance(sa_type, sqltypes.INTEGER), f"Failed for format {int_format}"
 
@@ -164,6 +164,10 @@ class TestSASDialect:
         assert isinstance(sa_type, sqltypes.NUMERIC)
 
         sa_type = map_sas_type_to_sqlalchemy("num", 8, "DOLLAR12.2")
+        assert isinstance(sa_type, sqltypes.NUMERIC)
+
+        # Test money format without decimals (should still be Numeric)
+        sa_type = map_sas_type_to_sqlalchemy("num", 8, "DOLLAR12.")
         assert isinstance(sa_type, sqltypes.NUMERIC)
 
     def test_normalize_name(self):

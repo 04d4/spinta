@@ -17,6 +17,10 @@ and formatted numbers.
 import re
 import logging
 from sqlalchemy import types as sqltypes
+try:
+    from geoalchemy2.types import Geometry
+except ImportError:
+    Geometry = None
 
 
 logger = logging.getLogger(__name__)
@@ -49,15 +53,11 @@ DATE_FORMATS = frozenset(
         "JULDAY",
         "JULIAN",
         "MONYY",
-        "MONNAME",
         "MONTH",
-        "QTR",
         "QTRR",
         "WEEKDATE",
-        "WEEKDATX",
         "WEEKDAY",
         "WORDDATE",
-        "WORDDATX",
         "YEAR",
         "NENGO",
         "MINGUO",
@@ -71,6 +71,19 @@ DATE_FORMATS = frozenset(
         "EURDFWDX",
         "EURDFWKX",
         "WEEKV",
+    ]
+)
+
+# Formats that render dates as strings (names, etc.)
+DATE_STRING_FORMATS = frozenset(
+    [
+        "DOWNAME",
+        "MONNAME",
+        "QTR",
+        "WEEKDATX",
+        "WORDDATX",
+        "YYQ",
+        "YYQC",
     ]
 )
 
@@ -137,7 +150,6 @@ NUMERIC_FORMATS = frozenset(
     [
         "COMMA",
         "COMMAX",
-        "DOLLAR",
         "EURX",
         "EURO",
         "PERCENT",
@@ -159,6 +171,18 @@ NUMERIC_FORMATS = frozenset(
 
 
 # =============================================================================
+# Money Formats
+# =============================================================================
+
+MONEY_FORMATS = frozenset(
+    [
+        "DOLLAR",
+        "NLMNY",
+    ]
+)
+
+
+# =============================================================================
 # Integer Formats (no decimals)
 # =============================================================================
 
@@ -175,7 +199,6 @@ INTEGER_FORMATS = frozenset(
         "RB",
         "PIB",
         "ZIP",
-        "NUMX",
         "S370FF",
         "S370FIB",
         "S370FPIB",
@@ -288,6 +311,17 @@ def map_sas_type_to_sqlalchemy(sas_type: str | None, length, format_str: str | N
             except (ValueError, TypeError):
                 char_len = 255  # Default fallback
 
+            # Special character formats
+            if format_str:
+                if format_str.upper().startswith("$GEOREF"):
+                    if Geometry:
+                        sa_type = Geometry()
+                    else:
+                        sa_type = sqltypes.VARCHAR(length=char_len)
+                    if cache is not None:
+                        cache[cache_key] = sa_type
+                    return sa_type
+
             sa_type = sqltypes.VARCHAR(length=char_len)
             if cache is not None:
                 cache[cache_key] = sa_type
@@ -334,6 +368,13 @@ def map_sas_type_to_sqlalchemy(sas_type: str | None, length, format_str: str | N
                         cache[cache_key] = sa_type
                     return sa_type
 
+                # Formats that render dates as strings
+                if format_name in DATE_STRING_FORMATS:
+                    sa_type = sqltypes.VARCHAR(length=255)
+                    if cache is not None:
+                        cache[cache_key] = sa_type
+                    return sa_type
+
                 # Standard SAS date formats
                 # Use simple startswith check which is faster than regex for fixed prefixes
                 for fmt in DATE_FORMATS:
@@ -354,6 +395,21 @@ def map_sas_type_to_sqlalchemy(sas_type: str | None, length, format_str: str | N
                 # Boolean formats
                 if format_name in BOOLEAN_FORMATS:
                     sa_type = sqltypes.BOOLEAN()
+                    if cache is not None:
+                        cache[cache_key] = sa_type
+                    return sa_type
+
+                # Money formats - always return Numeric (even if no decimals displayed)
+                for fmt in MONEY_FORMATS:
+                    if format_name.startswith(fmt):
+                        sa_type = sqltypes.NUMERIC(precision=format_info.get("width"), scale=decimals)
+                        if cache is not None:
+                            cache[cache_key] = sa_type
+                        return sa_type
+
+                # Binary formats for numeric columns
+                if format_name.startswith("HEX"):
+                    sa_type = sqltypes.LargeBinary()
                     if cache is not None:
                         cache[cache_key] = sa_type
                     return sa_type
@@ -388,6 +444,23 @@ def map_sas_type_to_sqlalchemy(sas_type: str | None, length, format_str: str | N
                     if cache is not None:
                         cache[cache_key] = sa_type
                     return sa_type
+
+                # Special case: width provided as format name (e.g., "1", "4") without decimals
+                # Treat as Integer if it looks like a simple width
+                if format_name.isdigit() and (decimals is None or decimals == 0):
+                     sa_type = sqltypes.INTEGER()
+                     if cache is not None:
+                        cache[cache_key] = sa_type
+                     return sa_type
+
+                # If format name is numeric with decimals, it was parsed weirdly by regex or fallback
+                # e.g. "11.6" -> format_name="11", decimals=6.
+                if format_name.isdigit() and decimals is not None:
+                    sa_type = sqltypes.NUMERIC(precision=int(format_name), scale=decimals)
+                    if cache is not None:
+                        cache[cache_key] = sa_type
+                    return sa_type
+
 
                 # Log unrecognized format for debugging
                 logger.debug(f"Unrecognized SAS format: {format_str}, using default NUMERIC type")

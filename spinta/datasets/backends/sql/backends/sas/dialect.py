@@ -213,6 +213,20 @@ class SASDialect(SASIntrospectionMixin, BaseDialect, DefaultDialect):
     supports_statement_cache = True
 
     # Type colspecs for result processing
+    #
+    # We use custom types because the JDBC driver is configured with
+    # applyFormats="false" (see create_connect_args), which causes SAS to return
+    # raw internal values (numbers) instead of formatted strings for date/time columns.
+    #
+    # These custom types handle the conversion from SAS epochs to Python objects:
+    # - Dates: Days since 1960-01-01
+    # - Datetimes: Seconds since 1960-01-01
+    # - Times: Seconds since midnight
+    #
+    # We prefer this approach over applyFormats="true" because it ensures:
+    # 1. Deterministic values (no ambiguity from locale-specific format strings)
+    # 2. Type safety (dates are always numbers, not strings that need parsing)
+    # 3. Performance (direct numeric conversion is faster than string parsing)
     colspecs = {
         sqltypes.Date: SASDateType,
         sqltypes.DateTime: SASDateTimeType,
