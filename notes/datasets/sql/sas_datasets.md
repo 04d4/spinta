@@ -108,12 +108,70 @@ echo "$SAS_USER $SAS_PASSWORD"
 echo "$SPINTA_SAS_USER $SPINTA_SAS_PASSWORD"
 ```
 
-## Running the project
+## Running the project server
 
 ```zsh
+    export DD=1203
+    # group 1
+    export SCHEMA='IMEK'
+    # group 2
+    # export SCHEMA='STPSAMP'
+    #
+    export MANIFEST="dist/manifest_${SCHEMA}_${DD}.csv"
+    echo $MANIFEST
+    #
     source .venv/bin/activate
     pyenv virtualenv 3.11 sp311c
     pyenv activate sp311c
-    poetry run spinta inspect -r sql "sas+jdbc://$SPINTA_SAS_USER:$SPINTA_SAS_PASSWORD@192.168.122.27:8597/?schema=IMEK" -o dist/manifest_IMEK_9.csv
-    poetry run spinta inpsect
+    #
+    poetry run spinta inspect -r sql "sas+jdbc://$SPINTA_SAS_USER:$SPINTA_SAS_PASSWORD@192.168.122.27:8597/?schema=$SCHEMA" -o $MANIFEST
+    soffice $MANIFEST
+    poetry run spinta run --mode external $MANIFEST
+```
+
+## Requests to the server
+
+```zsh
+http GET "$SERVER/:ns/:all?format(ascii,width(100))" $AUTH
+# schema=STPSAMP
+http GET "$SERVER/dataset1/Stpsale/96ab4434-a3d7-4344-9962-326e4298011d" $AUTH;
+http GET "$SERVER/dataset1/Stpsale?limit(2)" $AUTH;
+http GET "$SERVER/dataset1/Stpsale" $AUTH;
+http GET "$SERVER/dataset1/Stpsale" $AUTH
+#
+http GET "$SERVER/dataset1/Stpeuro" $AUTH
+http GET "$SERVER/dataset1/Stpeuro?limit(5)" $AUTH;
+http GET "$SERVER/dataset1/Stpeuro?select(_id,country)" $AUTH
+http GET "$SERVER/dataset1/Stpeuro?select(_id,country)&limit(5)" $AUTH
+http GET "$SERVER/dataset1/Stpeuro/7873d7c9-d40b-4f88-ae64-5ca99785805f" $AUTH
+#
+http GET "$SERVER/dataset1/Stpbgt" $AUTH
+# schema=IMEK
+http GET "$SERVER/dataset1/views/DetImVertesImdas?limit(5)" $AUTH
+http GET "$SERVER/dataset1/views/DetEkAutoImdas" $AUTH
+http GET "$SERVER/dataset1/views/DetEkAutoImdas" $AUTH
+```
+
+## SQL queries
+
+```sql
+select * from STPSAMP.STPEURO (OBS=10) WHERE STPEURO.country = 'Belarus';
+select * from STPSAMP.STPEURO (OBS=2)  where growth > 0;
+SELECT * FROM STPSAMP.STPEURO (OBS=6) WHERE lifeexp > 70
+ORDER BY lifeexp;
+;
+SELECT * FROM STPSAMP.Stpsale (OBS=1);
+SELECT * FROM STPSAMP.Stpeuro (OBS=2);
+SELECT * FROM STPSAMP.Stpbgt (OBS=3);
+-- truksta teisiu
+SELECT * FROM IMEK.DET_EK_DEKLARACIJOS;
+-- get schema names; schema=libname
+SELECT DISTINCT libname
+FROM dictionary.libnames
+WHERE libname IS NOT NULL
+ORDER BY libname;
+-- get table names
+SELECT memname FROM dictionary.tables
+WHERE libname = 'IMEK' AND memtype = 'DATA'
+ORDER BY memname;
 ```
