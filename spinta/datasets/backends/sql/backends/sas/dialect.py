@@ -14,6 +14,7 @@ Example connection URL:
 
 import logging
 from pathlib import Path
+from typing import Optional
 
 from sqlalchemy import pool, types as sqltypes
 from sqlalchemy.engine.default import DefaultDialect
@@ -44,7 +45,20 @@ class SASCompiler(SQLCompiler):
     instead of standard LIMIT clauses.
     """
 
-    def visit_select(self, select, **kwargs):
+    def visit_select(
+        self,
+        select,
+        asfrom: bool = False,
+        parens: bool = False,
+        fromhints=None,
+        compound_index=None,
+        nested_join_translation: bool = False,
+        select_wraps_for=None,
+        lateral: bool = False,
+        insert_into=None,
+        from_linter=None,
+        **kwargs,
+    ) -> str:
         """
         Override SELECT compilation to store limit for table references.
 
@@ -55,24 +69,43 @@ class SASCompiler(SQLCompiler):
 
         Args:
             select: The SQLAlchemy Select object being compiled
+            asfrom: Boolean indicating if this is part of a FROM clause
+            parens: Boolean indicating if parentheses should be added
+            fromhints: Dictionary of FROM clause hints
+            compound_index: Integer index for compound statements
+            nested_join_translation: Boolean for nested join translation
+            select_wraps_for: Select statement this wraps around
+            lateral: Boolean indicating if this is a LATERAL reference
+            insert_into: Boolean indicating if this is part of an INSERT INTO clause
+            from_linter: FromLinter object for tracking FROM clause relationships
             **kwargs: All keyword arguments passed to parent's visit_select
 
         Returns:
             The compiled SELECT statement string
         """
         # Store current limit before visiting components
-        old_limit = getattr(self, "_sas_current_limit", None)
+        old_limit: Optional[int] = getattr(self, "_sas_current_limit", None)
 
         # Extract limit value from select object
         # Use getattr with None default for safety
-        limit_value = getattr(select, "_limit", None)
-        self._sas_current_limit = limit_value
+        limit_value: Optional[int] = getattr(select, "_limit", None)
+        self._sas_current_limit: Optional[int] = limit_value
 
         logger.debug(f"SAS visit_select: stored limit={self._sas_current_limit}")
 
         try:
             # Call parent with all kwargs - let SQLAlchemy handle its internal state
-            result = super().visit_select(select, **kwargs)
+            result = super().visit_select(
+                select,
+                asfrom=asfrom,
+                parens=parens,
+                fromhints=fromhints,
+                compound_index=compound_index,
+                nested_join_translation=nested_join_translation,
+                select_wraps_for=select_wraps_for,
+                lateral=lateral,
+                **kwargs,
+            )
             return result
         finally:
             # Restore previous limit for nested SELECTs
