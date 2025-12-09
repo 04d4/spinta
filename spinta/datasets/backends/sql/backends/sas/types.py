@@ -18,11 +18,7 @@ import logging
 from datetime import time, timedelta
 from sqlalchemy import types as sqltypes
 
-from spinta.datasets.backends.sql.backends.sas.constants import (
-    SAS_EPOCH_DATE,
-    SAS_EPOCH_DATETIME,
-    is_sas_missing_value
-)
+from spinta.datasets.backends.sql.backends.sas.constants import SAS_EPOCH_DATE, SAS_EPOCH_DATETIME, is_sas_missing_value
 
 logger = logging.getLogger(__name__)
 
@@ -95,35 +91,17 @@ class SASStringType(sqltypes.TypeDecorator):
 
 
 class SASDateType(sqltypes.TypeDecorator):
-    """
-    SAS Date type that converts numeric days since 1960-01-01 to Python date objects.
-
-    SAS stores dates as the number of days since January 1, 1960.
-    """
+    """SAS Date type that converts numeric days since 1960-01-01 to Python date objects."""
 
     impl = sqltypes.DATE
     cache_ok = True
 
     def process_result_value(self, value, dialect):
-        """
-        Convert SAS numeric date value to Python date object.
-
-        Args:
-            value: Numeric value representing days since 1960-01-01
-            dialect: The dialect instance
-
-        Returns:
-            Python date object or None for missing values
-        """
-        if value is None:
+        """Convert SAS numeric date value to Python date object."""
+        if value is None or is_sas_missing_value(value):
             return None
 
         try:
-            # Check for SAS missing values
-            if is_sas_missing_value(value):
-                return None
-
-            # Convert numeric days to date
             days = int(float(value))
             return SAS_EPOCH_DATE + timedelta(days=days)
         except (ValueError, OverflowError, TypeError) as e:
@@ -132,35 +110,17 @@ class SASDateType(sqltypes.TypeDecorator):
 
 
 class SASDateTimeType(sqltypes.TypeDecorator):
-    """
-    SAS DateTime type that converts numeric seconds since 1960-01-01 to Python datetime objects.
-
-    SAS stores datetimes as the number of seconds since January 1, 1960 00:00:00.
-    """
+    """SAS DateTime type that converts numeric seconds since 1960-01-01 to Python datetime objects."""
 
     impl = sqltypes.DATETIME
     cache_ok = True
 
     def process_result_value(self, value, dialect):
-        """
-        Convert SAS numeric datetime value to Python datetime object.
-
-        Args:
-            value: Numeric value representing seconds since 1960-01-01 00:00:00
-            dialect: The dialect instance
-
-        Returns:
-            Python datetime object or None for missing values
-        """
-        if value is None:
+        """Convert SAS numeric datetime value to Python datetime object."""
+        if value is None or is_sas_missing_value(value):
             return None
 
         try:
-            # Check for SAS missing values
-            if is_sas_missing_value(value):
-                return None
-
-            # Convert numeric seconds to datetime
             seconds = float(value)
             return SAS_EPOCH_DATETIME + timedelta(seconds=seconds)
         except (ValueError, OverflowError, TypeError) as e:
@@ -169,35 +129,17 @@ class SASDateTimeType(sqltypes.TypeDecorator):
 
 
 class SASTimeType(sqltypes.TypeDecorator):
-    """
-    SAS Time type that converts numeric seconds to Python time objects.
-
-    SAS stores times as the number of seconds since midnight.
-    """
+    """SAS Time type that converts numeric seconds to Python time objects."""
 
     impl = sqltypes.TIME
     cache_ok = True
 
     def process_result_value(self, value, dialect):
-        """
-        Convert SAS numeric time value to Python time object.
-
-        Args:
-            value: Numeric value representing seconds since midnight
-            dialect: The dialect instance
-
-        Returns:
-            Python time object or None for missing values
-        """
-        if value is None:
+        """Convert SAS numeric time value to Python time object."""
+        if value is None or is_sas_missing_value(value):
             return None
 
         try:
-            # Check for SAS missing values
-            if is_sas_missing_value(value):
-                return None
-
-            # Convert numeric seconds to time
             total_seconds = int(float(value))
             hours = (total_seconds // 3600) % 24
             minutes = (total_seconds % 3600) // 60

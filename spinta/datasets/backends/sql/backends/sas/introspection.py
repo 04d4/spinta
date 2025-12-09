@@ -42,209 +42,145 @@ class SASIntrospectionMixin:
     default_schema_name: str = ""
     _type_mapping_cache: dict
 
-    def _safe_value_to_str(self, value):
+    def _execute_query_with_fallback(self, connection, query, process_fn, description, fallback_value, params=()):
         """
-        Safely convert SAS values to strings, handling both strings and Java numeric types.
-
-        When applyFormats is "false", SAS returns numeric values as java.lang.Double
-        instead of formatted strings. This helper handles both cases.
+        Execute a query with error handling and fallback.
 
         Args:
-            value: Value from SAS (can be string, Java Double, or other numeric types)
+            connection: Database connection
+            query: SQL query string
+            process_fn: Function to process result rows
+            description: Description for logging
+            fallback_value: Value to return on error
+            params: Query parameters tuple
+
+        Returns:
+            Processed result or fallback_value on error
+        """
+        try:
+            result = connection.execute(query, params) if params else connection.execute(query)
+            return process_fn(result)
+        except Exception as e:
+            logger.error(f"Failed to retrieve {description}: {e}. Returning fallback value.")
+            return fallback_value
+
+    def _safe_value_to_str(self, value):
+        """
+        Safely convert SAS values to strings, handling strings and Java numeric types.
 
         Returns:
             String representation of the value, or None if value is None
         """
         if value is None:
             return None
-
-        # If it's already a string, strip it
-        if isinstance(value, str):
-            return value.strip()
-
-        # For numeric types (including Java types), convert to string
-        # This handles java.lang.Double, java.lang.Integer, etc.
-        return str(value)
+        return value.strip() if isinstance(value, str) else str(value)
 
     def _process_sas_numeric_value(self, value):
         """
         Process SAS numeric values, handling missing values and special cases.
 
-        SAS uses "." and ".A" through ".Z" for missing numeric values.
-        Also handles Java NaN and Infinity values from JDBC.
-
-        Args:
-            value: The numeric value from SAS
-
         Returns:
             The numeric value or None if it represents a missing value
         """
-        if is_sas_missing_value(value):
-            return None
-
-        return value
+        return None if is_sas_missing_value(value) else value
 
     def get_schema_names(self, connection, **kw):
         """
-        Retrieve list of schema (library) names from SAS with fallback mechanisms.
-
-        Queries the DICTIONARY.LIBNAMES table to get all accessible libraries.
-        Falls back to empty list if query fails to prevent inspect command failures.
-
-        Args:
-            connection: Database connection
-            **kw: Additional keyword arguments
+        Retrieve list of schema (library) names from SAS.
 
         Returns:
-            List of schema names (library names)
+            List of schema names (library names), empty list on error
         """
-        try:
-            query = """
+        return self._execute_query_with_fallback(
+            connection,
+            """
             SELECT DISTINCT libname
             FROM dictionary.libnames
             WHERE libname IS NOT NULL
             ORDER BY libname
-            """
-
-            result = connection.execute(query)
-            return [row[0].strip() for row in result]
-        except Exception as e:
-            # Log error and return empty list as fallback
-            logger.error(f"Failed to retrieve schema names: {e}. Returning empty list.")
-            return []
+            """,
+            lambda rows: [row[0].strip() for row in rows],
+            "schema names",
+            [],
+        )
 
     def get_table_names(self, connection, schema=None, **kw):
         """
-        Retrieve list of table names from a schema with fallback mechanisms.
-
-        Queries DICTIONARY.TABLES filtering for MEMTYPE='DATA'.
-        Falls back gracefully if schema introspection fails.
-
-        Args:
-            connection: Database connection
-            schema: Schema (library) name, defaults to default schema
-            **kw: Additional keyword arguments
+        Retrieve list of table names from a schema.
 
         Returns:
-            List of table names
+            List of table names, empty list on error
         """
-        try:
-            if schema is None:
-                schema = self.default_schema_name
-                logger.debug(f"get_table_names: using default_schema_name='{schema}'")
+        schema = schema or self.default_schema_name
+        logger.debug(f"get_table_names: querying schema='{schema}'")
 
-            logger.debug(f"get_table_names: querying schema='{schema}'")
+        def process_result(rows):
+            table_names = [row[0].strip() for row in rows]
+            logger.debug(f"get_table_names: found {len(table_names)} tables in schema '{schema}': {table_names[:5]}...")
+            return table_names
 
-            query = """
+        return self._execute_query_with_fallback(
+            connection,
+            """
             SELECT memname
             FROM dictionary.tables
             WHERE libname = ? AND memtype = 'DATA'
             ORDER BY memname
-            """
-
-            result = connection.execute(query, (schema.upper() if schema else None,))
-            # Strip trailing spaces from table names (common in SAS databases)
-            table_names = [row[0].strip() for row in result]
-            logger.debug(f"get_table_names: found {len(table_names)} tables in schema '{schema}': {table_names[:5]}...")
-            return table_names
-        except Exception as e:
-            # Log error and return empty list as fallback
-            logger.error(f"Failed to retrieve table names for schema {schema}: {e}. Returning empty list.")
-            logger.debug(f"Exception type: {type(e).__name__}, Exception message: {str(e)}")
-            return []
+            """,
+            process_result,
+            f"table names for schema {schema}",
+            [],
+            (schema.upper() if schema else None,),
+        )
 
     def get_view_names(self, connection, schema=None, **kw):
         """
-        Retrieve list of view names from a schema with fallback mechanisms.
-
-        Queries DICTIONARY.TABLES filtering for MEMTYPE='VIEW'.
-        Falls back gracefully if view introspection fails.
-
-        Args:
-            connection: Database connection
-            schema: Schema (library) name, defaults to default schema
-            **kw: Additional keyword arguments
+        Retrieve list of view names from a schema.
 
         Returns:
-            List of view names
+            List of view names, empty list on error
         """
-        try:
-            if schema is None:
-                schema = self.default_schema_name
+        schema = schema or self.default_schema_name
 
-            query = """
+        return self._execute_query_with_fallback(
+            connection,
+            """
             SELECT memname
             FROM dictionary.tables
             WHERE libname = ? AND memtype = 'VIEW'
             ORDER BY memname
-            """
-
-            result = connection.execute(query, (schema.upper() if schema else None,))
-            return [row[0].strip() for row in result]
-        except Exception as e:
-            # Log error and return empty list as fallback
-            logger.error(f"Failed to retrieve view names for schema {schema}: {e}. Returning empty list.")
-            return []
+            """,
+            lambda rows: [row[0].strip() for row in rows],
+            f"view names for schema {schema}",
+            [],
+            (schema.upper() if schema else None,),
+        )
 
     def get_columns(self, connection, table_name, schema=None, **kw):
         """
-        Retrieve column metadata for a table with fallback mechanisms.
-
-        Queries DICTIONARY.COLUMNS to get column definitions including:
-        - Column name
-        - Data type
-        - Length
-        - Format
-        - Label
-        - Nullable status
-
-        Falls back gracefully if column introspection fails.
-
-        Args:
-            connection: Database connection
-            table_name: Name of the table
-            schema: Schema (library) name, defaults to default schema
-            **kw: Additional keyword arguments
+        Retrieve column metadata for a table.
 
         Returns:
-            List of column dictionaries with metadata
+            List of column dictionaries with metadata, empty list on error
         """
-        try:
-            if schema is None:
-                schema = self.default_schema_name
+        schema = schema or self.default_schema_name
 
-            query = """
-            SELECT
-                name,
-                type,
-                length,
-                format,
-                label,
-                notnull
-            FROM dictionary.columns
-            WHERE libname = ? AND memname = ?
-            ORDER BY varnum
-            """
-
-            result = connection.execute(query, (schema.upper() if schema else None, table_name.upper()))
-
+        def process_columns(result):
             columns = []
             for row in result:
                 col_name = self._safe_value_to_str(row[0])
-                col_type = self._safe_value_to_str(row[1])  # 'num' or 'char'
+                col_type = self._safe_value_to_str(row[1])
                 col_length = self._safe_value_to_str(row[2])
                 col_format = self._safe_value_to_str(row[3])
                 col_label = self._safe_value_to_str(row[4])
-                # notnull can be numeric (0 or 1), convert to bool directly
                 col_notnull = bool(row[5]) if row[5] is not None else False
 
-                # Map SAS type to SQLAlchemy type
                 sa_type = map_sas_type_to_sqlalchemy(col_type, col_length, col_format, self._type_mapping_cache)
 
                 column_info = {
                     "name": col_name,
                     "type": sa_type,
-                    "nullable": not bool(col_notnull),
+                    "nullable": not col_notnull,
                     "default": None,
                 }
 
@@ -252,89 +188,44 @@ class SASIntrospectionMixin:
                     column_info["comment"] = col_label
 
                 columns.append(column_info)
-
             return columns
-        except Exception as e:
-            # Log error and return empty list as fallback
-            logger.error(f"Failed to retrieve columns for table {table_name}: {e}. Returning empty list.")
-            return []
+
+        return self._execute_query_with_fallback(
+            connection,
+            """
+            SELECT name, type, length, format, label, notnull
+            FROM dictionary.columns
+            WHERE libname = ? AND memname = ?
+            ORDER BY varnum
+            """,
+            process_columns,
+            f"columns for table {table_name}",
+            [],
+            (schema.upper() if schema else None, table_name.upper()),
+        )
 
     def get_pk_constraint(self, connection, table_name, schema=None, **kw):
-        """
-        Retrieve primary key constraint information.
-
-        SAS does not support primary key constraints, so this always
-        returns an empty constraint.
-
-        Args:
-            connection: Database connection
-            table_name: Name of the table
-            schema: Schema (library) name
-            **kw: Additional keyword arguments
-
-        Returns:
-            Dictionary with empty constrained_columns list
-        """
-        # SAS doesn't support primary keys
+        """SAS does not support primary key constraints."""
         return {"constrained_columns": [], "name": None}
 
     def get_foreign_keys(self, connection, table_name, schema=None, **kw):
-        """
-        Retrieve foreign key constraint information.
-
-        SAS does not support foreign key constraints, so this always
-        returns an empty list.
-
-        Args:
-            connection: Database connection
-            table_name: Name of the table
-            schema: Schema (library) name
-            **kw: Additional keyword arguments
-
-        Returns:
-            Empty list (no foreign keys)
-        """
-        # SAS doesn't support foreign keys
+        """SAS does not support foreign key constraints."""
         return []
 
     def get_indexes(self, connection, table_name, schema=None, **kw):
         """
-        Retrieve index information for a table with graceful error handling.
-
-        Queries DICTIONARY.INDEXES to get index definitions.
-        Falls back gracefully if index introspection fails.
-
-        Args:
-            connection: Database connection
-            table_name: Name of the table
-            schema: Schema (library) name
-            **kw: Additional keyword arguments
+        Retrieve index information for a table.
 
         Returns:
-            List of index dictionaries with metadata
+            List of index dictionaries with metadata, empty list on error
         """
-        try:
-            if schema is None:
-                schema = self.default_schema_name
+        schema = schema or self.default_schema_name
 
-            query = """
-            SELECT
-                indxname,
-                name,
-                unique
-            FROM dictionary.indexes
-            WHERE libname = ? AND memname = ?
-            ORDER BY indxname, indxpos
-            """
-
-            result = connection.execute(query, (schema.upper() if schema else None, table_name.upper()))
-
-            # Group columns by index name
+        def process_indexes(result):
             indexes = {}
             for row in result:
                 idx_name = self._safe_value_to_str(row[0])
                 col_name = self._safe_value_to_str(row[1])
-                # is_unique can be numeric (0 or 1) or string, handle both
                 is_unique = bool(row[2]) if row[2] is not None else False
 
                 if idx_name not in indexes:
@@ -343,95 +234,73 @@ class SASIntrospectionMixin:
                 indexes[idx_name]["column_names"].append(col_name)
 
             return list(indexes.values())
-        except Exception as e:
-            # Log error and return empty list as fallback
-            logger.error(f"Failed to retrieve indexes for table {table_name}: {e}. Returning empty list.")
-            return []
+
+        return self._execute_query_with_fallback(
+            connection,
+            """
+            SELECT indxname, name, unique
+            FROM dictionary.indexes
+            WHERE libname = ? AND memname = ?
+            ORDER BY indxname, indxpos
+            """,
+            process_indexes,
+            f"indexes for table {table_name}",
+            [],
+            (schema.upper() if schema else None, table_name.upper()),
+        )
 
     def get_table_comment(self, connection, table_name, schema=None, **kw):
         """
-        Retrieve table comment (label) with graceful error handling.
-
-        Queries DICTIONARY.TABLES for the table label.
-        Falls back gracefully if comment retrieval fails.
-
-        Args:
-            connection: Database connection
-            table_name: Name of the table
-            schema: Schema (library) name
-            **kw: Additional keyword arguments
+        Retrieve table comment (label).
 
         Returns:
             Dictionary with 'text' key containing the comment
         """
-        try:
-            if schema is None:
-                schema = self.default_schema_name
+        schema = schema or self.default_schema_name
 
-            query = """
+        def process_comment(result):
+            row = result.fetchone()
+            return {"text": row[0].strip() if row and row[0] else None}
+
+        return self._execute_query_with_fallback(
+            connection,
+            """
             SELECT memlabel
             FROM dictionary.tables
             WHERE libname = ? AND memname = ?
-            """
-
-            result = connection.execute(query, (schema.upper() if schema else None, table_name.upper()))
-
-            row = result.fetchone()
-            if row and row[0]:
-                return {"text": row[0].strip()}
-
-            return {"text": None}
-        except Exception as e:
-            # Log error and return None as fallback
-            logger.error(f"Failed to retrieve table comment for {table_name}: {e}. Returning None.")
-            return {"text": None}
+            """,
+            process_comment,
+            f"table comment for {table_name}",
+            {"text": None},
+            (schema.upper() if schema else None, table_name.upper()),
+        )
 
     def has_table(self, connection, table_name, schema=None, **kw):
         """
-        Check if a table exists in the schema with graceful error handling.
-
-        Args:
-            connection: Database connection
-            table_name: Name of the table
-            schema: Schema (library) name
-            **kw: Additional keyword arguments
+        Check if a table exists in the schema.
 
         Returns:
             True if table exists, False otherwise (including on errors)
         """
-        try:
-            if schema is None:
-                schema = self.default_schema_name
+        schema = schema or self.default_schema_name
 
-            query = """
+        def check_existence(result):
+            row = result.fetchone()
+            return int(row[0]) > 0 if row else False
+
+        return self._execute_query_with_fallback(
+            connection,
+            """
             SELECT COUNT(*)
             FROM dictionary.tables
             WHERE libname = ? AND memname = ? AND memtype = 'DATA'
-            """
-
-            result = connection.execute(query, (schema.upper() if schema else None, table_name.upper()))
-
-            row = result.fetchone()
-            return int(row[0]) > 0 if row else False
-        except Exception as e:
-            # Log error and return False as fallback
-            logger.error(f"Failed to check table existence for {table_name}: {e}. Returning False.")
-            return False
+            """,
+            check_existence,
+            f"table existence for {table_name}",
+            False,
+            (schema.upper() if schema else None, table_name.upper()),
+        )
 
     def has_sequence(self, connection, sequence_name, schema=None, **kw):
-        """
-        Check if a sequence exists.
-
-        SAS does not support sequences, so this always returns False.
-
-        Args:
-            connection: Database connection
-            sequence_name: Name of the sequence
-            schema: Schema name
-            **kw: Additional keyword arguments
-
-        Returns:
-            False (sequences not supported)
-        """
-        # SAS doesn't support sequences
+        """SAS does not support sequences."""
         return False

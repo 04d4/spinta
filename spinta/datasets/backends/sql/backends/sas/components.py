@@ -34,32 +34,22 @@ class SAS(Sql):
     query_builder_type = "sql/sas"
 
     def __init__(self, **kwargs):
-        """
-        Initialize the SAS backend.
-
-        Extracts schema from the DSN URL if not already set.
-        """
+        """Initialize the SAS backend and extract schema from DSN URL if present."""
         super().__init__(**kwargs)
+
         # Extract schema from DSN URL if not already set
         if hasattr(self, "dsn") and self.dsn and not self.dbschema:
             from sqlalchemy.engine.url import make_url
 
             url = make_url(self.dsn)
-            schema = url.query.get("schema")
-            if schema:
+            if schema := url.query.get("schema"):
                 self.dbschema = schema
 
     def get_table(self, model: Model, name: str | None = None) -> sa.Table:
         """
         Get or create a SQLAlchemy Table object for a model.
 
-        Overrides the base implementation to handle SAS-specific schema resolution
-        from the dialect's default_schema_name.
-
-        SAS requires special handling because:
-        1. Schema names are called "libraries" in SAS terminology
-        2. The schema may be specified in the URL query parameters
-        3. The dialect stores the default schema name after initialization
+        Handles SAS-specific schema resolution from the dialect's default_schema_name.
 
         Args:
             model: The model to get the table for
@@ -67,36 +57,32 @@ class SAS(Sql):
 
         Returns:
             SQLAlchemy Table object
+
+        Raises:
+            KeyError: If table not found in schema
         """
         name = name or model.external.name
 
-        # Use dialect's default_schema_name if backend's dbschema is not set
-        effective_schema = self.dbschema
-        if not effective_schema and hasattr(self.engine.dialect, "default_schema_name"):
-            effective_schema = self.engine.dialect.default_schema_name
+        # Determine effective schema (backend's dbschema or dialect's default)
+        effective_schema = self.dbschema or getattr(self.engine.dialect, "default_schema_name", None)
+        key = f"{effective_schema}.{name}" if effective_schema else name
 
-        if effective_schema:
-            key = f"{effective_schema}.{name}"
-        else:
-            key = name
-
+        # Create table if not in cache
         if key not in self.schema.tables:
-            # Ensure the dialect has the correct schema set before reflection
             if hasattr(self.engine.dialect, "default_schema_name"):
                 self.engine.dialect.default_schema_name = effective_schema
-
-            # Create table with schema - SQLAlchemy will store it with the schema in the key
             sa.Table(name, self.schema, autoload_with=self.engine, schema=effective_schema)
 
-        # Try to get the table with schema first, then without
+        # Retrieve table with multiple fallback strategies
         if key in self.schema.tables:
             return self.schema.tables[key]
-        elif name in self.schema.tables:
-            # Fallback: table might be stored without schema prefix
+
+        if name in self.schema.tables:
             return self.schema.tables[name]
-        else:
-            # Last resort: search for the table by name
-            for table_key, table_obj in self.schema.tables.items():
-                if table_obj.name == name:
-                    return table_obj
-            raise KeyError(f"Table '{name}' not found in schema")
+
+        # Last resort: search by name
+        for table_obj in self.schema.tables.values():
+            if table_obj.name == name:
+                return table_obj
+
+        raise KeyError(f"Table '{name}' not found in schema")
