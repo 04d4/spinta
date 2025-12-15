@@ -358,4 +358,5 @@ def register_sas_dialect():
     """
     from sqlalchemy.dialects import registry
 
+    logger.debug("Registering SAS dialect with SQLAlchemy")
     registry.register("sas.jdbc", "spinta.datasets.backends.sql.backends.sas.dialect", "SASDialect")
