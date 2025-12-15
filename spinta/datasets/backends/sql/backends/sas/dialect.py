@@ -14,12 +14,11 @@ Example connection URL:
 
 import logging
 from pathlib import Path
-from typing import Optional
+from typing import Any
 
 from sqlalchemy import pool, types as sqltypes
 from sqlalchemy.engine.default import DefaultDialect
 from sqlalchemy.sql.compiler import SQLCompiler
-from sqlalchemy.schema import Table
 
 from spinta.datasets.backends.sql.backends.sas.base import BaseDialect
 from spinta.datasets.backends.sql.backends.sas.identifier import SASIdentifierPreparer
@@ -45,35 +44,16 @@ class SASCompiler(SQLCompiler):
     instead of standard LIMIT clauses.
     """
 
-    def visit_select(self, select, **kwargs) -> str:
-        """
-        Override SELECT compilation to store limit for table references.
-
-        In SAS, LIMIT must be applied as (OBS=n) on table references in the
-        FROM clause, not as a separate LIMIT clause at the end of the query.
-        This method stores the limit value during compilation so it can be
-        applied to table references in visit_table.
-
-        Args:
-            select: The SQLAlchemy Select object being compiled
-            **kwargs: All arguments passed to parent's visit_select
-
-        Returns:
-            The compiled SELECT statement string
-        """
-        # Store current limit and extract limit value from select object
-        old_limit: Optional[int] = getattr(self, "_sas_current_limit", None)
-        self._sas_current_limit: Optional[int] = getattr(select, "_limit", None)
-
-        logger.debug(f"SAS visit_select: stored limit={self._sas_current_limit}")
-
-        try:
-            return super().visit_select(select, **kwargs)
-        finally:
-            # Restore previous limit for nested SELECTs
-            self._sas_current_limit = old_limit
-
-    def visit_table(self, table: Table, asfrom: bool = False, **kw):
+    def visit_table(
+        self,
+        table: Any,
+        asfrom: bool = False,
+        iscrud: bool = False,
+        ashint: bool = False,
+        fromhints: Any | None = None,
+        use_schema: bool = True,
+        **kwargs,
+    ):
         """
         Visit a Table object and compile its name, ensuring schema qualification.
 
@@ -97,7 +77,7 @@ class SASCompiler(SQLCompiler):
                     schema_modified = True
 
             # Get compiled table name from parent
-            result = super().visit_table(table, asfrom=asfrom, **kw)
+            result = super().visit_table(table, asfrom, iscrud, ashint, fromhints, use_schema, **kwargs)
 
             # Append SAS limit clause (OBS=n) when in FROM clause
             if asfrom:
