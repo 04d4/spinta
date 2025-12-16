@@ -40,7 +40,6 @@ def _ensure_dialect_registered(path: str):
 
 
 def read_schema(context: Context, path: str, prepare: str = None, dataset_name: str = ""):
-    # TODO(oa): Ensure custom dialects are registered before engine creation
     _ensure_dialect_registered(path)
 
     engine = sa.create_engine(path)

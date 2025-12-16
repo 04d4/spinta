@@ -11,7 +11,6 @@ from spinta.datasets.backends.sql.components import Sql
 @commands.load.register(Context, Sql, dict)
 def load(context: Context, backend: Sql, config: Dict[str, Any]):
     dsn = config["dsn"]
-    # TODO(oa): do we need to expand environment variables here?
     if dsn:
         dsn = os.path.expandvars(dsn)
     schema = config.get("schema")
