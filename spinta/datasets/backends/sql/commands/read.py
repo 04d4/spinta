@@ -121,12 +121,26 @@ def getone(
     qry = table.select()
     missing_columns = []
     valid_conditions = []
+    # Create mapping from property names to actual database column names
+    column_mapping = {}
 
     for column_name, column_value in query.items():
         id_column = table.c.get(column_name)
         if id_column is None:
-            missing_columns.append(column_name)
-            continue
+            # Try case-insensitive lookup for SAS databases
+            if backend.engine.dialect.name == "sas":
+                for actual_col in table.c:
+                    if actual_col.name.upper() == column_name.upper():
+                        id_column = actual_col
+                        column_mapping[column_name] = actual_col.name
+                        break
+
+            if id_column is None:
+                missing_columns.append(column_name)
+                continue
+        else:
+            # Direct match found
+            column_mapping[column_name] = id_column.name
 
         # Build WHERE condition (dialect-specific)
         if backend.engine.dialect.name == "sas":
@@ -193,7 +207,9 @@ def getone(
 
     for field in model.properties:
         if not field.startswith("_"):
-            value = row[field]
+            # Use column mapping to get the actual database column name
+            db_column = column_mapping.get(field, field)
+            value = row[db_column]
             data[field] = value
 
     additional_data = {"_type": model.model_type(), "_id": id_}
