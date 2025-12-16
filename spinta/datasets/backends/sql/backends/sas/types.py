@@ -83,6 +83,7 @@ class SASStringType(sqltypes.TypeDecorator):
 
             # Check for SAS missing value string representations
             if is_sas_missing_value(value):
+                logger.debug(f"Detected SAS missing value in string: {value}")
                 return None
 
             return value
