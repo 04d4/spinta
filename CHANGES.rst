@@ -6,9 +6,11 @@ Changes
 
 Bug fixes:
 
-New config option `check_ref_filters` added, with default value set to `True`. When set to `False`, reference checks are skipped during command execution. Use this option with caution (`#1659`_).
+- New config option `check_ref_filters` added, with default value set to `True`. When set to `False`, reference checks are skipped during command execution. Use this option with caution (`#1659`_).
+- `backref` no longer requires a corresponding `ref` entry (`#1314`_).
 
 .. _#1659: https://github.com/atviriduomenys/spinta/issues/1659
+.. _#1314: https://github.com/atviriduomenys/spinta/issues/1314
 
 New Features:
 
