@@ -38,7 +38,6 @@ Download SAS Drivers for JDBC from [SAS Support](https://documentation.sas.com/d
     unzip /tmp/jdbc/products/jdbcdrivers__94300__prt__xx__sp0__1/jdbcdrivers_vjr.zip -d /tmp/jdbc/drivers
     sudo mkdir -p /opt/jdbc
     sudo chown -R spinta:spinta /opt/jdbc
-    sudo chown -R oa:oa /opt/jdbc
     find /tmp/jdbc/drivers/eclipse/plugins  -name "*.jar" -exec cp {} /opt/jdbc \;
     ls -al /opt/jdbc
     # cleanup
@@ -146,10 +145,6 @@ http GET "$SERVER/dataset1/Stpeuro?select(_id,country)&limit(5)" $AUTH
 http GET "$SERVER/dataset1/Stpeuro/7873d7c9-d40b-4f88-ae64-5ca99785805f" $AUTH
 #
 http GET "$SERVER/dataset1/Stpbgt" $AUTH
-# schema=IMEK
-http GET "$SERVER/dataset1/views/DetImVertesImdas?limit(5)" $AUTH
-http GET "$SERVER/dataset1/views/DetEkAutoImdas" $AUTH
-http GET "$SERVER/dataset1/views/DetEkAutoImdas" $AUTH
 ```
 
 ## SQL queries
@@ -163,8 +158,6 @@ ORDER BY lifeexp;
 SELECT * FROM STPSAMP.Stpsale (OBS=1);
 SELECT * FROM STPSAMP.Stpeuro (OBS=2);
 SELECT * FROM STPSAMP.Stpbgt (OBS=3);
--- truksta teisiu
-SELECT * FROM IMEK.DET_EK_DEKLARACIJOS;
 -- get schema names; schema=libname
 SELECT DISTINCT libname
 FROM dictionary.libnames
@@ -172,6 +165,6 @@ WHERE libname IS NOT NULL
 ORDER BY libname;
 -- get table names
 SELECT memname FROM dictionary.tables
-WHERE libname = 'IMEK' AND memtype = 'DATA'
+WHERE libname = 'STPSAMP' AND memtype = 'DATA'
 ORDER BY memname;
 ```
